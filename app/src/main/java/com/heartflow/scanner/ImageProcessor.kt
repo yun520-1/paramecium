@@ -1,0 +1,403 @@
+package com.heartflow.scanner
+
+import android.content.ContentValues
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.util.Log
+import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.*
+
+/**
+ * 图像处理器
+ * 提供各种图像处理工具和保存功能
+ */
+class ImageProcessor(private val context: Context) {
+
+    companion object {
+        private const val TAG = "ImageProcessor"
+    }
+
+    /**
+     * 保存图像到相册
+     * @param bitmap 要保存的图像
+     * @param fileName 文件名（不含扩展名）
+     * @param format 保存格式: PNG, JPEG（默认 JPEG 质量 80）
+     * @param quality JPEG/PNG 压缩质量（默认 80）
+     * @return 保存路径，失败返回 null
+     */
+    fun saveToGallery(bitmap: Bitmap, fileName: String? = null, format: Bitmap.CompressFormat = Bitmap.CompressFormat.JPEG, quality: Int = 80): String? {
+        val name = fileName ?: generateFileName(format)
+        val extension = if (format == Bitmap.CompressFormat.PNG) "png" else "jpg"
+        val mimeType = if (format == Bitmap.CompressFormat.PNG) "image/png" else "image/jpeg"
+
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                saveImageMediaStore(bitmap, name, extension, mimeType, format, quality)
+            } else {
+                saveImageLegacy(bitmap, name, extension, format, quality)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "保存图片失败", e)
+            null
+        }
+    }
+
+    /**
+     * 使用 MediaStore 保存（Android 10+）
+     */
+    private fun saveImageMediaStore(
+        bitmap: Bitmap,
+        fileName: String,
+        extension: String,
+        mimeType: String,
+        format: Bitmap.CompressFormat,
+        quality: Int = 80
+    ): String? {
+        val contentValues = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "$fileName.$extension")
+            put(MediaStore.Images.Media.MIME_TYPE, mimeType)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/HeartFlow")
+                // Android 11+ 必须设置 IS_PENDING = 1 写入，完成后改为 0
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+        }
+
+        val resolver = context.contentResolver
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+            ?: return null
+
+        return try {
+            resolver.openOutputStream(uri)?.use { outputStream ->
+                bitmap.compress(format, quality, outputStream)
+            }
+            // 写入完成后，标记 IS_PENDING = 0 使文件可见
+            val updateValues = ContentValues().apply {
+                put(MediaStore.Images.Media.IS_PENDING, 0)
+            }
+            resolver.update(uri, updateValues, null, null)
+            // 返回用户可理解的路径
+            "Pictures/HeartFlow/$fileName.$extension"
+        } catch (e: Exception) {
+            Log.e(TAG, "保存图片到MediaStore失败", e)
+            resolver.delete(uri, null, null)
+            null
+        }
+    }
+
+    /**
+     * 直接保存到外部存储（Android 9 及以下）
+     */
+    private fun saveImageLegacy(
+        bitmap: Bitmap,
+        fileName: String,
+        extension: String,
+        format: Bitmap.CompressFormat,
+        quality: Int = 80
+    ): String? {
+        val picturesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+        val scansDir = File(picturesDir, "Scans")
+        if (!scansDir.exists()) {
+            scansDir.mkdirs()
+        }
+
+        val file = File(scansDir, "$fileName.$extension")
+
+        return try {
+            FileOutputStream(file).use { outputStream ->
+                bitmap.compress(format, quality, outputStream)
+            }
+            file.absolutePath
+        } catch (e: Exception) {
+            Log.e(TAG, "保存图片失败", e)
+            null
+        }
+    }
+
+    /**
+     * 调整图像亮度
+     * @param factor 亮度因子，1.0 = 原图，>1.0 更亮，<1.0 更暗
+     */
+    fun adjustBrightness(bitmap: Bitmap, factor: Float): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val pixel = bitmap.getPixel(x, y)
+                var r = (Color.red(pixel) * factor).toInt().coerceIn(0, 255)
+                var g = (Color.green(pixel) * factor).toInt().coerceIn(0, 255)
+                var b = (Color.blue(pixel) * factor).toInt().coerceIn(0, 255)
+                result.setPixel(x, y, Color.rgb(r, g, b))
+            }
+        }
+
+        return result
+    }
+
+    /**
+     * 调整图像对比度
+     * @param factor 对比度因子，1.0 = 原图，>1.0 更强对比
+     */
+    fun adjustContrast(bitmap: Bitmap, factor: Float): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val pixel = bitmap.getPixel(x, y)
+                val r = ((Color.red(pixel) - 128) * factor + 128).toInt().coerceIn(0, 255)
+                val g = ((Color.green(pixel) - 128) * factor + 128).toInt().coerceIn(0, 255)
+                val b = ((Color.blue(pixel) - 128) * factor + 128).toInt().coerceIn(0, 255)
+                result.setPixel(x, y, Color.rgb(r, g, b))
+            }
+        }
+
+        return result
+    }
+
+    /**
+     * 旋转图像
+     * @param degree 旋转角度（顺时针）
+     */
+    fun rotate(bitmap: Bitmap, degree: Float): Bitmap {
+        val matrix = android.graphics.Matrix()
+        matrix.postRotate(degree)
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    }
+
+    /**
+     * 裁剪图像
+     */
+    fun crop(bitmap: Bitmap, left: Int, top: Int, width: Int, height: Int): Bitmap {
+        val actualWidth = minOf(width, bitmap.width - left)
+        val actualHeight = minOf(height, bitmap.height - top)
+        return Bitmap.createBitmap(bitmap, left, top, actualWidth, actualHeight)
+    }
+
+    /**
+     * 自动裁剪空白边缘
+     * 检测图片非白色内容区域边界，自动去除四周空白
+     * @param bitmap 源图
+     * @param threshold 空白判定阈值（0-255，越大越敏感，推荐 240）
+     * @param margin 保留的边距像素（防止裁切过紧）
+     * @return 裁剪后的 bitmap
+     */
+    fun autoCrop(bitmap: Bitmap, threshold: Int = 240, margin: Int = 8): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+
+        // 计算采样步长（大图加速）
+        val step = if (width * height > 1_000_000) 4 else 2
+
+        // 判定像素是否为"空白"（近白色）
+        fun isBlank(pixel: Int): Boolean {
+            val r = Color.red(pixel)
+            val g = Color.green(pixel)
+            val b = Color.blue(pixel)
+            return r >= threshold && g >= threshold && b >= threshold
+        }
+
+        // 从上往下扫描，找到第一条有内容的行
+        var top = 0
+        top@ while (top < height) {
+            for (x in 0 until width step step) {
+                if (!isBlank(bitmap.getPixel(x, top))) break@top
+            }
+            top++
+        }
+
+        // 从下往上扫描
+        var bottom = height - 1
+        bottom@ while (bottom > top) {
+            for (x in 0 until width step step) {
+                if (!isBlank(bitmap.getPixel(x, bottom))) break@bottom
+            }
+            bottom--
+        }
+
+        // 从左往右扫描
+        var left = 0
+        left@ while (left < width) {
+            for (y in top..bottom step step) {
+                if (!isBlank(bitmap.getPixel(left, y))) break@left
+            }
+            left++
+        }
+
+        // 从右往左扫描
+        var right = width - 1
+        right@ while (right > left) {
+            for (y in top..bottom step step) {
+                if (!isBlank(bitmap.getPixel(right, y))) break@right
+            }
+            right--
+        }
+
+        // 如果全部空白，返回原图
+        if (top >= bottom || left >= right) return bitmap
+
+        // 添加边距（避免裁切太紧）
+        val croppedLeft = (left - margin).coerceAtLeast(0)
+        val croppedTop = (top - margin).coerceAtLeast(0)
+        val croppedRight = (right + margin).coerceAtMost(width - 1)
+        val croppedBottom = (bottom + margin).coerceAtMost(height - 1)
+
+        val cropWidth = croppedRight - croppedLeft + 1
+        val cropHeight = croppedBottom - croppedTop + 1
+
+        return Bitmap.createBitmap(bitmap, croppedLeft, croppedTop, cropWidth, cropHeight)
+    }
+
+    /**
+     * 缩放图像
+     */
+    fun scale(bitmap: Bitmap, scaleX: Float, scaleY: Float): Bitmap {
+        val newWidth = (bitmap.width * scaleX).toInt()
+        val newHeight = (bitmap.height * scaleY).toInt()
+        return Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+    }
+
+    /**
+     * 调整图像饱和度
+     * @param factor 饱和度因子，0 = 灰度，1 = 原图，>1 = 更饱和
+     */
+    fun adjustSaturation(bitmap: Bitmap, factor: Float): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val pixel = bitmap.getPixel(x, y)
+                val r = Color.red(pixel)
+                val g = Color.green(pixel)
+                val b = Color.blue(pixel)
+
+                // 转换为 HSL
+                val max = maxOf(r, g, b)
+                val min = minOf(r, g, b)
+                val l = (max + min) / 2.0 / 255.0
+
+                var h = 0.0
+                var s = 0.0
+
+                if (max != min) {
+                    val d = (max - min) / 255.0
+                    s = if (l > 0.5) d / (2.0 - max / 255.0 - min / 255.0) else d / (max / 255.0 + min / 255.0)
+
+                    h = when (max) {
+                        r -> ((g - b) / (max - min) + if (g < b) 6 else 0) / 6.0
+                        g -> ((b - r) / (max - min) + 2) / 6.0
+                        else -> ((r - g) / (max - min) + 4) / 6.0
+                    }
+                }
+
+                // 调整饱和度并转换回 RGB
+                s = (s * factor).coerceIn(0.0, 1.0)
+
+                val newRgb = hslToRgb(h, s, l)
+                result.setPixel(x, y, Color.rgb(newRgb[0], newRgb[1], newRgb[2]))
+            }
+        }
+
+        return result
+    }
+
+    /**
+     * HSL 转 RGB
+     */
+    private fun hslToRgb(h: Double, s: Double, l: Double): IntArray {
+        var r: Double
+        var g: Double
+        var b: Double
+
+        if (s == 0.0) {
+            r = l
+            g = l
+            b = l
+        } else {
+            fun hue2rgb(p: Double, q: Double, t: Double): Double {
+                var tt = t
+                if (tt < 0) tt += 1.0
+                if (tt > 1) tt -= 1.0
+                if (tt < 1.0 / 6.0) return p + (q - p) * 6.0 * tt
+                if (tt < 1.0 / 2.0) return q
+                if (tt < 2.0 / 3.0) return p + (q - p) * (2.0 / 3.0 - tt) * 6.0
+                return p
+            }
+
+            val q = if (l < 0.5) l * (1 + s) else l + s - l * s
+            val p = 2 * l - q
+            r = hue2rgb(p, q, h + 1.0 / 3.0)
+            g = hue2rgb(p, q, h)
+            b = hue2rgb(p, q, h - 1.0 / 3.0)
+        }
+
+        return intArrayOf((r * 255).toInt().coerceIn(0, 255),
+                          (g * 255).toInt().coerceIn(0, 255),
+                          (b * 255).toInt().coerceIn(0, 255))
+    }
+
+    /**
+     * 应用浮雕效果
+     */
+    fun applyEmboss(bitmap: Bitmap): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+
+        for (y in 1 until height - 1) {
+            for (x in 1 until width - 1) {
+                val pixel = bitmap.getPixel(x, y)
+                val neighbor = bitmap.getPixel(x - 1, y - 1)
+
+                val r = (Color.red(pixel) - Color.red(neighbor) + 128).coerceIn(0, 255)
+                val g = (Color.green(pixel) - Color.green(neighbor) + 128).coerceIn(0, 255)
+                val b = (Color.blue(pixel) - Color.blue(neighbor) + 128).coerceIn(0, 255)
+
+                result.setPixel(x, y, Color.rgb(r, g, b))
+            }
+        }
+
+        return result
+    }
+
+    /**
+     * 应用反色效果
+     */
+    fun applyInvert(bitmap: Bitmap): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val pixel = bitmap.getPixel(x, y)
+                val r = 255 - Color.red(pixel)
+                val g = 255 - Color.green(pixel)
+                val b = 255 - Color.blue(pixel)
+                result.setPixel(x, y, Color.rgb(r, g, b))
+            }
+        }
+
+        return result
+    }
+
+    /**
+     * 生成带时间戳的文件名
+     */
+    private fun generateFileName(format: Bitmap.CompressFormat): String {
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+        val prefix = if (format == Bitmap.CompressFormat.PNG) "scan" else "scan"
+        return "${prefix}_$timestamp"
+    }
+}
