@@ -66,7 +66,52 @@ fun ChatInput(
     val recordPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) { }
+        if (granted) {
+            // 权限已获取，启动语音识别
+            val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+            recognizer.setRecognitionListener(object : android.speech.RecognitionListener {
+                override fun onResults(results: Bundle) {
+                    val matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    if (matches != null && matches.isNotEmpty()) {
+                        onVoiceSend(matches[0])
+                    }
+                    recognizer.destroy()
+                    if (speechRecognizer === recognizer) speechRecognizer = null
+                    onVoiceToggle { it.copy(isRecording = false) }
+                }
+                override fun onReadyForSpeech(params: Bundle) {}
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onBufferReceived(buffer: ByteArray) {}
+                override fun onEndOfSpeech() {}
+                override fun onError(error: Int) {
+                    val msg = when (error) {
+                        SpeechRecognizer.ERROR_NO_MATCH -> "未识别到语音"
+                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "语音输入超时"
+                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "识别器忙，请重试"
+                        SpeechRecognizer.ERROR_NETWORK -> "网络错误"
+                        SpeechRecognizer.ERROR_AUDIO -> "音频错误"
+                        else -> "语音识别失败: $error"
+                    }
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    recognizer.destroy()
+                    if (speechRecognizer === recognizer) speechRecognizer = null
+                    onVoiceToggle { it.copy(isRecording = false) }
+                }
+                override fun onPartialResults(partialResults: Bundle) {}
+                override fun onEvent(eventType: Int, params: Bundle) {}
+            })
+            speechRecognizer = recognizer
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            }
+            recognizer.startListening(intent)
+        } else {
+            Toast.makeText(context, "需要录音权限才能使用语音输入", Toast.LENGTH_SHORT).show()
+            onVoiceToggle { it.copy(isRecording = false) }
+        }
     }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -301,49 +346,9 @@ fun ChatInput(
                 if (!isProcessing && !voiceState.isRecording && text.isBlank()) {
                     FilledIconButton(
                         onClick = {
-                            recordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             onVoiceToggle { it.copy(isRecording = true, recordingDuration = 0) }
-                            // 创建并启动 SpeechRecognizer
-                            val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
-                            recognizer.setRecognitionListener(object : android.speech.RecognitionListener {
-                                override fun onResults(results: Bundle) {
-                                    val matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                                    if (matches != null && matches.isNotEmpty()) {
-                                        onVoiceSend(matches[0])
-                                    }
-                                    recognizer.destroy()
-                                    if (speechRecognizer === recognizer) speechRecognizer = null
-                                    onVoiceToggle { it.copy(isRecording = false) }
-                                }
-                                override fun onReadyForSpeech(params: Bundle) {}
-                                override fun onBeginningOfSpeech() {}
-                                override fun onRmsChanged(rmsdB: Float) {}
-                                override fun onBufferReceived(buffer: ByteArray) {}
-                                override fun onEndOfSpeech() {}
-                                override fun onError(error: Int) {
-                                    val msg = when (error) {
-                                        SpeechRecognizer.ERROR_NO_MATCH -> "未识别到语音"
-                                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "语音输入超时"
-                                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "识别器忙，请重试"
-                                        SpeechRecognizer.ERROR_NETWORK -> "网络错误"
-                                        SpeechRecognizer.ERROR_AUDIO -> "音频错误"
-                                        else -> "语音识别失败: $error"
-                                    }
-                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                    recognizer.destroy()
-                                    if (speechRecognizer === recognizer) speechRecognizer = null
-                                    onVoiceToggle { it.copy(isRecording = false) }
-                                }
-                                override fun onPartialResults(partialResults: Bundle) {}
-                                override fun onEvent(eventType: Int, params: Bundle) {}
-                            })
-                            speechRecognizer = recognizer
-                            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE)
-                                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                            }
-                            recognizer.startListening(intent)
+                            // 权限回调中启动识别器，避免权限未授权就调用 startListening
+                            recordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         },
                         modifier = Modifier.size(48.dp),
                         colors = IconButtonDefaults.filledIconButtonColors(

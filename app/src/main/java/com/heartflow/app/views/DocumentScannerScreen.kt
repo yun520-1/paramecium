@@ -1,7 +1,14 @@
 package com.heartflow.app.views
 
+import android.content.ContentValues
+import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.PointF
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,7 +30,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -32,25 +38,27 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.heartflow.app.imaging.ScanImageProcessor
-import com.heartflow.scanner.ImageProcessor
 import com.heartflow.app.model.ScanFilterType
+import com.heartflow.scanner.DocumentScanner
+import com.heartflow.scanner.ImageProcessor as ImageProcessor
+import com.heartflow.scanner.PdfExporter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 专业级文档扫描页面
+ * 专业级文档扫描页面 v2.0
  *
- * 核心功能：
- * 1. 从相册选择图片
- * 2. 8种专业级扫描效果（超越夸克扫描王）
- * 3. 原图/处理后对比预览
- * 4. 导出为PNG或PDF
+ * 核心流程：
+ * 1. 从相册选择图片（自动采样缩放至 2048px 以内）
+ * 2. 【新】一键文档矫正 — Canny 边缘检测 + 透视变换矫正
+ * 3. 8 种专业级扫描效果增强
+ * 4. 原图/处理后对比预览
+ * 5. 导出为 JPEG 或 PDF
  *
- * 滤镜算法基于 iOS Core Image 移植：
- * - 自动增强：直方图1%/99%截断拉伸 + 饱和度提升
- * - 文档增强：亮度+0.12、对比度+1.45、阴影提升
- * - 文字锐化：USM(unsharp mask) 锐化
+ * 文档矫正算法（纯 Kotlin 实现，无 OpenCV 依赖）：
+ * - Canny 边缘检测 + 形态学闭运算 + 连通组件分析 + Monotone Chain 凸包 + Douglas-Peucker 简化
+ * - 自动降级：canny 管道检测失败时回退到传统四边边界扫描
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,38 +68,31 @@ fun DocumentScannerScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // 状态
+    // ── 状态 ──────────────────────────────────────────────
     var selectedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var correctedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var processedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isProcessing by remember { mutableStateOf(false) }
     var selectedFilter by remember { mutableStateOf(ScanFilterType.AUTO_ENHANCE) }
     var selectedFormat by remember { mutableStateOf("jpg") }
     var saveResult by remember { mutableStateOf<String?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var detectionStatus by remember { mutableStateOf<String?>(null) }
 
-    // 图片选择器
-    val imagePickerLauncher = rememberLauncherForActivityResult(
+    val bitmapLoader = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        uri?.let {
-            scope.launch {
-                try {
-                    val bitmap = withContext(Dispatchers.IO) {
-                        loadBitmapFromUri(context, it)
-                    }
-                    if (bitmap != null) {
-                        selectedBitmap = bitmap
-                        processedBitmap = null
-                        saveResult = null
-                        errorMessage = null
-                    } else {
-                        errorMessage = "无法加载图片"
-                    }
-                } catch (e: Exception) {
-                    errorMessage = "加载失败: ${e.message}"
-                }
-            }
-        }
+    ) { uri ->
+        uri?.let { loadAndSetBitmap(context, it, scope,
+            onLoaded = { bmp ->
+                selectedBitmap = bmp
+                correctedBitmap = null
+                processedBitmap = null
+                saveResult = null
+                errorMessage = null
+                detectionStatus = null
+            },
+            onError = { errorMessage = it }
+        )}
     }
 
     Scaffold(
@@ -103,19 +104,10 @@ fun DocumentScannerScreen(
                         Icon(Icons.Default.ArrowBack, "返回")
                     }
                 },
-                actions = {
-                    // 帮助按钮
-                    IconButton(onClick = {
-                        Toast.makeText(context, "选择图片后，点击滤镜预览效果，再点击保存", Toast.LENGTH_LONG).show()
-                    }) {
-                        Icon(Icons.Default.HelpOutline, "帮助")
-                    }
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimary,
-                    actionIconContentColor = MaterialTheme.colorScheme.onPrimary
+                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimary
                 )
             )
         }
@@ -127,7 +119,7 @@ fun DocumentScannerScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 功能说明
+            // ── 功能说明 ──────────────────────────────
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
@@ -139,23 +131,21 @@ fun DocumentScannerScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        Icons.Default.AutoAwesome,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
+                        Icons.Default.AutoAwesome, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp)
                     )
                     Spacer(Modifier.width(12.dp))
                     Text(
-                        "专业扫描：8种增强效果，超越夸克扫描王",
+                        "专业扫描 v2：边缘检测 + 透视矫正 + 8种增强效果",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
                     )
                 }
             }
 
-            // 选择图片按钮
+            // ── 选择图片 ──────────────────────────────
             Button(
-                onClick = { imagePickerLauncher.launch("image/*") },
+                onClick = { bitmapLoader.launch("image/*") },
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp)
             ) {
@@ -164,303 +154,234 @@ fun DocumentScannerScreen(
                 Text("从相册选择图片")
             }
 
-            // 错误提示
-            AnimatedVisibility(
+            // ── 错误提示 ──────────────────────────────
+            StatusCard(
                 visible = errorMessage != null,
-                enter = fadeIn(),
-                exit = fadeOut()
-            ) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer
-                    )
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.Error, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                        Spacer(Modifier.width(8.dp))
-                        Text(errorMessage ?: "", color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            }
+                icon = { Icon(Icons.Default.Error, null, tint = MaterialTheme.colorScheme.error) },
+                text = errorMessage ?: "",
+                textColor = MaterialTheme.colorScheme.error,
+                containerColor = MaterialTheme.colorScheme.errorContainer
+            )
 
-            // 图片预览区
+            // ── 检测状态 ──────────────────────────────
+            StatusCard(
+                visible = detectionStatus != null,
+                icon = { Icon(Icons.Default.Info, null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp)) },
+                text = detectionStatus ?: "",
+                textColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                containerColor = MaterialTheme.colorScheme.secondaryContainer
+            )
+
+            // ── 有图片时显示操作区 ────────────────────
             if (selectedBitmap != null) {
-                // 8种滤镜选择器
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text("扫描效果", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text(
-                            "点击选择不同效果，预览对比",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        )
-                        Spacer(Modifier.height(8.dp))
-
-                        // 横向滚动的滤镜列表
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            ScanFilterType.entries.forEach { filter ->
-                                FilterItem(
-                                    filter = filter,
-                                    isSelected = selectedFilter == filter,
-                                    onClick = { selectedFilter = filter }
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // 格式选择
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("导出格式:", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-
-                        FilterChip(
-                            selected = selectedFormat == "jpg",
-                            onClick = { selectedFormat = "jpg" },
-                            label = { Text("JPEG图片") },
-                            leadingIcon = {
-                                Icon(Icons.Default.Check, null, Modifier.size(16.dp))
-                            }
-                        )
-
-                        FilterChip(
-                            selected = selectedFormat == "pdf",
-                            onClick = { selectedFormat = "pdf" },
-                            label = { Text("PDF文档") },
-                            leadingIcon = {
-                                Icon(Icons.Default.Check, null, Modifier.size(16.dp))
-                            }
-                        )
-                    }
-                }
-
-                // 预览区
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // 原图预览
-                    Card(
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                "原图",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(4.dp)
-                            )
-                            Image(
-                                bitmap = selectedBitmap!!.asImageBitmap(),
-                                contentDescription = "原图",
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f)
-                                    .padding(4.dp)
-                                    .clip(RoundedCornerShape(4.dp)),
-                                contentScale = ContentScale.Fit
+                ActionBar(
+                    isProcessing = isProcessing,
+                    correctionAvailable = correctedBitmap != null && processedBitmap == null && detectionStatus?.contains("降级") == false,
+                    onCorrect = {
+                        scope.launch {
+                            runDocumentCorrection(
+                                context, selectedBitmap!!,
+                                onStart = { isProcessing = true; detectionStatus = null; errorMessage = null },
+                                onSuccess = { corrected, note ->
+                                    correctedBitmap = corrected
+                                    processedBitmap = corrected
+                                    detectionStatus = note
+                                },
+                                onFallback = { enhanced ->
+                                    correctedBitmap = enhanced
+                                    processedBitmap = enhanced
+                                    detectionStatus = "⚠️ 边缘检测降级，正在使用增强模式"
+                                },
+                                onError = { errorMessage = it },
+                                onFinish = { isProcessing = false }
                             )
                         }
-                    }
-
-                    // 处理后预览
-                    Card(
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                selectedFilter.displayName,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(4.dp)
-                            )
-                            if (processedBitmap != null) {
-                                Image(
-                                    bitmap = processedBitmap!!.asImageBitmap(),
-                                    contentDescription = "处理后",
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .weight(1f)
-                                        .padding(4.dp)
-                                        .clip(RoundedCornerShape(4.dp)),
-                                    contentScale = ContentScale.Fit
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .weight(1f)
-                                        .padding(4.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 操作按钮
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = { imagePickerLauncher.launch("image/*") },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("重选")
-                    }
-
-                    // 预览按钮
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                isProcessing = true
-                                try {
-                                    val result = withContext(Dispatchers.Default) {
-                                        val filtered = ScanImageProcessor.apply(selectedFilter, selectedBitmap!!)
-                                        // 自动裁剪空白边缘
-                                        ImageProcessor(context).autoCrop(filtered)
-                                    }
+                    },
+                    onPreview = {
+                        scope.launch {
+                            runFilterPreview(
+                                context, correctedBitmap ?: selectedBitmap!!, selectedFilter,
+                                onStart = { isProcessing = true; errorMessage = null },
+                                onSuccess = { result ->
                                     processedBitmap = result
-                                } catch (e: Exception) {
-                                    errorMessage = "预览失败: ${e.message}"
-                                } finally {
-                                    isProcessing = false
-                                }
-                            }
-                        },
-                        enabled = !isProcessing,
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("预览效果")
-                    }
-
-                    // 保存按钮
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                isProcessing = true
-                                errorMessage = null
-                                try {
-                                    // 先处理（滤镜+自动裁剪）
-                                    val processed = withContext(Dispatchers.Default) {
-                                        val filtered = ScanImageProcessor.apply(selectedFilter, selectedBitmap!!)
-                                        // 自动裁剪空白边缘
-                                        ImageProcessor(context).autoCrop(filtered)
-                                    }
-                                    // 保存
-                                    val path = withContext(Dispatchers.IO) {
-                                        saveScannedDocument(context, processed, selectedFormat, selectedFilter.raw)
-                                    }
-                                    processedBitmap = processed
+                                    if (correctedBitmap != null) detectionStatus = "✅ 文档矫正 + 滤镜已应用"
+                                },
+                                onError = { errorMessage = it },
+                                onFinish = { isProcessing = false }
+                            )
+                        }
+                    },
+                    onSave = {
+                        scope.launch {
+                            runSave(
+                                context, correctedBitmap ?: selectedBitmap!!, selectedFilter, selectedFormat,
+                                onStart = { isProcessing = true; errorMessage = null },
+                                onSuccess = { path ->
+                                    processedBitmap = if (selectedFormat == "jpg") withContext(Dispatchers.Default) {
+                                        ScanImageProcessor.apply(selectedFilter, correctedBitmap ?: selectedBitmap!!)
+                                    } else null
                                     saveResult = path
                                     Toast.makeText(context, "✅ 已保存至: $path", Toast.LENGTH_LONG).show()
-                                } catch (e: Exception) {
-                                    errorMessage = "保存失败: ${e.message}"
-                                } finally {
-                                    isProcessing = false
-                                }
-                            }
-                        },
-                        enabled = !isProcessing,
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("保存")
+                                },
+                                onError = { errorMessage = it },
+                                onFinish = { isProcessing = false }
+                            )
+                        }
                     }
-                }
+                )
 
-                // 保存结果
-                AnimatedVisibility(
+                // ── 滤镜选择器 ──────────────────────────
+                FilterSelector(
+                    selectedFilter = selectedFilter,
+                    hasCorrection = correctedBitmap != null,
+                    onFilterSelected = { selectedFilter = it }
+                )
+
+                // ── 导出格式 ──────────────────────────
+                FormatSelector(
+                    selectedFormat = selectedFormat,
+                    onFormatSelected = { selectedFormat = it }
+                )
+
+                // ── 双栏预览 ──────────────────────────
+                DualPreviewPane(
+                    original = selectedBitmap!!,
+                    processed = processedBitmap,
+                    corrected = correctedBitmap,
+                    filterName = selectedFilter.displayName,
+                    isProcessing = isProcessing
+                )
+
+                // ── 保存结果提示 ──────────────────────
+                StatusCard(
                     visible = saveResult != null && !isProcessing,
-                    enter = fadeIn(),
-                    exit = fadeOut()
-                ) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                "已保存: ${saveResult ?: ""}",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer
-                            )
-                        }
-                    }
-                }
+                    icon = { Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.secondary) },
+                    text = "已保存: ${saveResult ?: ""}",
+                    textColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    small = true
+                )
             } else {
-                // 空状态提示
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                EmptyState()
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  UI 子组件
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 通用状态卡片
+ */
+@Composable
+private fun StatusCard(
+    visible: Boolean,
+    icon: @Composable () -> Unit,
+    text: String,
+    textColor: androidx.compose.ui.graphics.Color,
+    containerColor: androidx.compose.ui.graphics.Color,
+    small: Boolean = false
+) {
+    AnimatedVisibility(visible = visible, enter = fadeIn(), exit = fadeOut()) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = containerColor)
+        ) {
+            Row(
+                modifier = Modifier.padding(if (small) 8.dp else 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                icon()
+                Spacer(Modifier.width(if (small) 6.dp else 8.dp))
+                Text(text, fontSize = if (small) 12.sp else 14.sp, color = textColor)
+            }
+        }
+    }
+}
+
+/**
+ * 操作按钮：文档矫正 / 预览效果 / 保存
+ */
+@Composable
+private fun ActionBar(
+    isProcessing: Boolean,
+    correctionAvailable: Boolean,
+    onCorrect: () -> Unit,
+    onPreview: () -> Unit,
+    onSave: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Button(
+            onClick = onCorrect,
+            enabled = !isProcessing,
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+        ) {
+            Icon(Icons.Default.Crop, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("文档矫正", fontSize = 13.sp)
+        }
+
+        OutlinedButton(
+            onClick = onPreview,
+            enabled = !isProcessing,
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("预览效果", fontSize = 13.sp)
+        }
+
+        Button(
+            onClick = onSave,
+            enabled = !isProcessing,
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("保存", fontSize = 13.sp)
+        }
+    }
+}
+
+/**
+ * 横向滚动的滤镜选择器
+ */
+@Composable
+private fun FilterSelector(
+    selectedFilter: ScanFilterType,
+    hasCorrection: Boolean,
+    onFilterSelected: (ScanFilterType) -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text("扫描效果", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(
+                if (hasCorrection) "点击切换滤镜，原图为矫正后文档" else "点击切换滤镜预览效果",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ScanFilterType.entries.forEach { filter ->
+                    FilterItem(
+                        filter = filter,
+                        isSelected = selectedFilter == filter,
+                        onClick = { onFilterSelected(filter) }
                     )
-                ) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                Icons.Default.DocumentScanner,
-                                contentDescription = null,
-                                modifier = Modifier.size(80.dp),
-                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                            )
-                            Spacer(Modifier.height(16.dp))
-                            Text(
-                                "请选择图片开始扫描",
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                "支持8种专业增强效果",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                            )
-                        }
-                    }
                 }
             }
         }
@@ -468,7 +389,7 @@ fun DocumentScannerScreen(
 }
 
 /**
- * 滤镜选择项组件
+ * 单个滤镜项
  */
 @Composable
 private fun FilterItem(
@@ -483,13 +404,11 @@ private fun FilterItem(
             .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
             .then(
-                if (isSelected) {
-                    Modifier.border(
-                        2.dp,
-                        MaterialTheme.colorScheme.primary,
-                        RoundedCornerShape(8.dp)
-                    )
-                } else Modifier
+                if (isSelected) Modifier.border(
+                    2.dp,
+                    MaterialTheme.colorScheme.primary,
+                    RoundedCornerShape(8.dp)
+                ) else Modifier
             )
             .padding(8.dp)
     ) {
@@ -499,14 +418,14 @@ private fun FilterItem(
                 .clip(RoundedCornerShape(8.dp))
                 .background(
                     when (filter) {
-                        ScanFilterType.ORIGINAL -> Color.Gray
-                        ScanFilterType.AUTO_ENHANCE -> Color(0xFF4CAF50)
-                        ScanFilterType.WHITE_DOCUMENT -> Color.White
-                        ScanFilterType.BLACK_AND_WHITE -> Color.Black
-                        ScanFilterType.REMOVE_NOISE -> Color(0xFF2196F3)
-                        ScanFilterType.BRIGHTEN -> Color(0xFFFFEB3B)
-                        ScanFilterType.SHARPEN_TEXT -> Color(0xFF9C27B0)
-                        ScanFilterType.RECEIPT -> Color(0xFFFF9800)
+                        ScanFilterType.ORIGINAL -> android.graphics.Color.GRAY
+                        ScanFilterType.AUTO_ENHANCE -> android.graphics.Color.rgb(76, 175, 80)
+                        ScanFilterType.WHITE_DOCUMENT -> android.graphics.Color.WHITE
+                        ScanFilterType.BLACK_AND_WHITE -> android.graphics.Color.BLACK
+                        ScanFilterType.REMOVE_NOISE -> android.graphics.Color.rgb(33, 150, 243)
+                        ScanFilterType.BRIGHTEN -> android.graphics.Color.rgb(255, 235, 59)
+                        ScanFilterType.SHARPEN_TEXT -> android.graphics.Color.rgb(156, 39, 176)
+                        ScanFilterType.RECEIPT -> android.graphics.Color.rgb(255, 152, 0)
                     }
                 ),
             contentAlignment = Alignment.Center
@@ -514,8 +433,7 @@ private fun FilterItem(
             Icon(
                 filter.icon,
                 contentDescription = null,
-                tint = if (filter == ScanFilterType.WHITE_DOCUMENT || filter == ScanFilterType.BLACK_AND_WHITE)
-                    Color.White else Color.White.copy(alpha = 0.8f),
+                tint = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.8f),
                 modifier = Modifier.size(24.dp)
             )
         }
@@ -529,15 +447,236 @@ private fun FilterItem(
     }
 }
 
-// ── 辅助函数 ────────────────────────────────────────────────────────────────
+/**
+ * 导出格式选择
+ */
+@Composable
+private fun FormatSelector(
+    selectedFormat: String,
+    onFormatSelected: (String) -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("导出格式:", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+
+            FilterChip(
+                selected = selectedFormat == "jpg",
+                onClick = { onFormatSelected("jpg") },
+                label = { Text("JPEG图片") },
+                leadingIcon = { Icon(Icons.Default.Check, null, Modifier.size(16.dp)) }
+            )
+
+            FilterChip(
+                selected = selectedFormat == "pdf",
+                onClick = { onFormatSelected("pdf") },
+                label = { Text("PDF文档") },
+                leadingIcon = { Icon(Icons.Default.Check, null, Modifier.size(16.dp)) }
+            )
+        }
+    }
+}
 
 /**
- * 从 URI 加载 Bitmap
+ * 双栏对比预览
  */
-private fun loadBitmapFromUri(context: android.content.Context, uri: Uri): Bitmap? {
+@Composable
+private fun DualPreviewPane(
+    original: Bitmap,
+    processed: Bitmap?,
+    corrected: Bitmap?,
+    filterName: String,
+    isProcessing: Boolean
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // 原图侧
+        Card(
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    if (corrected != null) "矫正前" else "原图",
+                    fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(4.dp)
+                )
+                Image(
+                    bitmap = original.asImageBitmap(),
+                    contentDescription = "原始图片",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(4.dp)
+                        .clip(RoundedCornerShape(4.dp)),
+                    contentScale = ContentScale.Fit
+                )
+            }
+        }
+
+        // 处理后侧
+        Card(
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    when {
+                        processed != null -> filterName
+                        corrected != null -> "矫正预览"
+                        else -> "处理预览"
+                    },
+                    fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(4.dp)
+                )
+                if (processed != null) {
+                    Image(
+                        bitmap = processed.asImageBitmap(),
+                        contentDescription = "处理后图片",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(4.dp)
+                            .clip(RoundedCornerShape(4.dp)),
+                        contentScale = ContentScale.Fit
+                    )
+                } else if (isProcessing) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                            Spacer(Modifier.height(4.dp))
+                            Text("处理中...", fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                        }
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "点击「文档矫正」\n或「预览效果」",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 空状态
+ */
+@Composable
+private fun EmptyState() {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    Icons.Default.DocumentScanner,
+                    contentDescription = null,
+                    modifier = Modifier.size(80.dp),
+                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "请选择图片开始扫描",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "支持自动文档边缘检测 + 透视矫正 + 8种增强效果",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 32.dp)
+                )
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  业务操作（顶层函数，便于独立测试）
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 从 URI 采样加载 Bitmap（最大边长 2048px，避免 OOM）
+ */
+private suspend fun loadAndSetBitmap(
+    context: Context,
+    uri: Uri,
+    scope: kotlinx.coroutines.CoroutineScope,
+    onLoaded: (Bitmap) -> Unit,
+    onError: (String) -> Unit
+) {
+    scope.launch {
+        try {
+            val bitmap = withContext(Dispatchers.IO) {
+                loadBitmapSampled(context, uri, maxSize = 2048)
+            }
+            if (bitmap != null) onLoaded(bitmap)
+            else onError("无法加载图片")
+        } catch (e: Exception) {
+            onError("加载失败: ${e.message}")
+        }
+    }
+}
+
+/**
+ * 采样加载图片，限制最大尺寸
+ */
+private fun loadBitmapSampled(context: Context, uri: Uri, maxSize: Int): Bitmap? {
     return try {
-        context.contentResolver.openInputStream(uri)?.use { inputStream ->
-            android.graphics.BitmapFactory.decodeStream(inputStream)
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            // 第一次解码：只读尺寸
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeStream(stream, null, opts)
+        }
+
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            val opts = BitmapFactory.Options().apply {
+                // 计算采样率
+                val w = outWidth
+                val h = outHeight
+                var sample = 1
+                while (w / sample > maxSize || h / sample > maxSize) sample *= 2
+                inSampleSize = sample
+            }
+            BitmapFactory.decodeStream(stream, null, opts)
         }
     } catch (e: Exception) {
         null
@@ -545,10 +684,129 @@ private fun loadBitmapFromUri(context: android.content.Context, uri: Uri): Bitma
 }
 
 /**
+ * 文档矫正：Canny 边缘检测 → 透视变换
+ */
+private suspend fun runDocumentCorrection(
+    context: Context,
+    bitmap: Bitmap,
+    onStart: () -> Unit,
+    onSuccess: (Bitmap, String) -> Unit,
+    onFallback: (Bitmap) -> Unit,
+    onError: (String) -> Unit,
+    onFinish: () -> Unit
+) {
+    onStart()
+    try {
+        val corrected = withContext(Dispatchers.Default) {
+            val scanner = DocumentScanner()
+            try {
+                val corners = scanner.detectCorners(bitmap)
+                val isFallback = corners.any { it.x == 0f || it.y == 0f } ||
+                    computeQuadArea(corners) == 0f
+
+                if (!isFallback && corners.size == 4) {
+                    "✅ 文档边缘检测成功，正在透视矫正..." to
+                        scanner.perspectiveTransform(bitmap, corners)
+                } else {
+                    null to bitmap  // 通知降级
+                }
+            } catch (e: Exception) {
+                // 检测失败，做基础增强降级
+                null to ImageProcessor(context).let { proc ->
+                    proc.adjustContrast(proc.adjustBrightness(bitmap, 1.1f), 1.15f)
+                }
+            }
+        }
+
+        val (note, result) = corrected
+        if (note == null) {
+            onFallback(result)
+        } else {
+            onSuccess(result, note)
+        }
+    } catch (e: Exception) {
+        onError("文档矫正失败: ${e.message}")
+    } finally {
+        onFinish()
+    }
+}
+
+/**
+ * 滤镜预览
+ */
+private suspend fun runFilterPreview(
+    context: Context,
+    source: Bitmap,
+    filter: ScanFilterType,
+    onStart: () -> Unit,
+    onSuccess: (Bitmap) -> Unit,
+    onError: (String) -> Unit,
+    onFinish: () -> Unit
+) {
+    onStart()
+    try {
+        val result = withContext(Dispatchers.Default) {
+            val filtered = ScanImageProcessor.apply(filter, source)
+            ImageProcessor(context).autoCrop(filtered)
+        }
+        onSuccess(result)
+    } catch (e: Exception) {
+        onError("预览失败: ${e.message}")
+    } finally {
+        onFinish()
+    }
+}
+
+/**
  * 保存扫描文档
  */
+private suspend fun runSave(
+    context: Context,
+    source: Bitmap,
+    filter: ScanFilterType,
+    format: String,
+    onStart: () -> Unit,
+    onSuccess: (String) -> Unit,
+    onError: (String) -> Unit,
+    onFinish: () -> Unit
+) {
+    onStart()
+    try {
+        val path = withContext(Dispatchers.Default) {
+            // 先应用滤镜
+            val filtered = ScanImageProcessor.apply(filter, source)
+            val cropped = ImageProcessor(context).autoCrop(filtered)
+            // 保存
+            saveScannedDocument(context, cropped, format, filter.raw)
+        }
+        onSuccess(path)
+    } catch (e: Exception) {
+        onError("保存失败: ${e.message}")
+    } finally {
+        onFinish()
+    }
+}
+
+/**
+ * 计算四边形面积
+ */
+private fun computeQuadArea(corners: List<PointF>): Float {
+    if (corners.size != 4) return 0f
+    val (tl, tr, bl, br) = corners.let { listOf(it[0], it[1], it[2], it[3]) }
+    val area1 = kotlin.math.abs(
+        tl.x * (tr.y - br.y) + tr.x * (br.y - tl.y) + br.x * (tl.y - tr.y)
+    ) / 2f
+    val area2 = kotlin.math.abs(
+        tl.x * (bl.y - br.y) + bl.x * (br.y - tl.y) + br.x * (tl.y - bl.y)
+    ) / 2f
+    return area1 + area2
+}
+
+/**
+ * 保存扫描文档（使用 ImageProcessor 或 PdfExporter）
+ */
 private fun saveScannedDocument(
-    context: android.content.Context,
+    context: Context,
     bitmap: Bitmap,
     format: String,
     filterName: String
@@ -557,132 +815,13 @@ private fun saveScannedDocument(
     val fileName = "scan_${filterName}_$timestamp"
 
     return if (format == "pdf") {
-        saveAsPdf(context, bitmap, fileName)
+        PdfExporter(context).exportToPdf(bitmap, fileName)
     } else {
-        saveAsJpeg(context, bitmap, fileName)
-    }
-}
-
-/**
- * 扫描保存方法（MediaStore 方式，兼容 Android 10+）
- * 使用 JPEG 格式 + 质量 80，大幅减小文件体积
- */
-private fun saveAsJpeg(context: android.content.Context, bitmap: Bitmap, fileName: String): String {
-    val extension = "jpg"
-    val mimeType = "image/jpeg"
-    val quality = 80
-    val relativePath = "${android.os.Environment.DIRECTORY_PICTURES}/HeartFlow"
-
-    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-        // Android 10+ 使用 MediaStore，确保相册可见
-        val contentValues = android.content.ContentValues().apply {
-            put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "$fileName.$extension")
-            put(android.provider.MediaStore.Images.Media.MIME_TYPE, mimeType)
-            put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, relativePath)
-            put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
-        }
-
-        val uri = context.contentResolver.insert(
-            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues
-        ) ?: throw Exception("无法创建 MediaStore 条目")
-
-        try {
-            context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, outputStream)
-            }
-            // 写入完成后清除 IS_PENDING，使媒体扫描器可见
-            val pendingValues = android.content.ContentValues().apply {
-                put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
-            }
-            context.contentResolver.update(uri, pendingValues, null, null)
-            // 触发媒体扫描器立即扫描
-            val fileUri = android.net.Uri.parse(uri.toString())
-            val scanIntent = android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, fileUri)
-            context.sendBroadcast(scanIntent)
-            return "$relativePath/$fileName.$extension"
-        } catch (e: Exception) {
-            // 写入失败时删除临时的 MediaStore 条目
-            context.contentResolver.delete(uri, null, null)
-            throw e
-        }
-    } else {
-        // Android 9 及以下使用传统文件 API
-        val dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES)
-        val heartflowDir = java.io.File(dir, "HeartFlow")
-        if (!heartflowDir.exists()) heartflowDir.mkdirs()
-        val file = java.io.File(heartflowDir, "$fileName.$extension")
-        java.io.FileOutputStream(file).use { out ->
-            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, out)
-        }
-        // 发送广播通知媒体扫描器
-        val scanIntent = android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE,
-            android.net.Uri.fromFile(file))
-        context.sendBroadcast(scanIntent)
-        return file.absolutePath
-    }
-}
-
-/**
- * 保存为 PDF（使用 MediaStore）
- */
-private fun saveAsPdf(context: android.content.Context, bitmap: Bitmap, fileName: String): String {
-    val extension = "pdf"
-    val mimeType = "application/pdf"
-    val relativePath = "${android.os.Environment.DIRECTORY_DOCUMENTS}/HeartFlow"
-
-    val outputUri: android.net.Uri
-    val outputPath: String
-
-    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-        val contentValues = android.content.ContentValues().apply {
-            put(android.provider.MediaStore.Files.FileColumns.DISPLAY_NAME, "$fileName.$extension")
-            put(android.provider.MediaStore.Files.FileColumns.MIME_TYPE, mimeType)
-            put(android.provider.MediaStore.Files.FileColumns.RELATIVE_PATH, relativePath)
-            put(android.provider.MediaStore.Files.FileColumns.IS_PENDING, 1)
-        }
-
-        outputUri = context.contentResolver.insert(
-            android.provider.MediaStore.Files.getContentUri("external"), contentValues
-        ) ?: throw Exception("无法创建 MediaStore 条目")
-
-        outputPath = "$relativePath/$fileName.$extension"
-    } else {
-        val dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOCUMENTS)
-        val heartflowDir = java.io.File(dir, "HeartFlow")
-        if (!heartflowDir.exists()) heartflowDir.mkdirs()
-        val file = java.io.File(heartflowDir, "$fileName.$extension")
-        outputUri = android.net.Uri.fromFile(file)
-        outputPath = file.absolutePath
-    }
-
-    try {
-        val pdfDocument = android.graphics.pdf.PdfDocument()
-        val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(
-            bitmap.width, bitmap.height, 1
-        ).create()
-        val page = pdfDocument.startPage(pageInfo)
-        page.canvas.drawBitmap(bitmap, 0f, 0f, null)
-        pdfDocument.finishPage(page)
-
-        context.contentResolver.openOutputStream(outputUri)?.use { outputStream ->
-            pdfDocument.writeTo(outputStream)
-        } ?: throw Exception("无法打开输出流")
-
-        pdfDocument.close()
-
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            val pendingValues = android.content.ContentValues().apply {
-                put(android.provider.MediaStore.Files.FileColumns.IS_PENDING, 0)
-            }
-            context.contentResolver.update(outputUri, pendingValues, null, null)
-        }
-
-        return outputPath
-    } catch (e: Exception) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q &&
-            outputUri.toString().startsWith("content://")) {
-            context.contentResolver.delete(outputUri, null, null)
-        }
-        throw e
+        ImageProcessor(context).saveToGallery(
+            bitmap = bitmap,
+            fileName = fileName,
+            format = Bitmap.CompressFormat.JPEG,
+            quality = 85
+        ) ?: throw Exception("图片保存失败")
     }
 }

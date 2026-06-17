@@ -184,68 +184,122 @@ class ImageProcessor(private val context: Context) {
     }
 
     /**
-     * 自动裁剪空白边缘
-     * 检测图片非白色内容区域边界，自动去除四周空白
+     * 智能自动裁剪空白边缘
+     *
+     * v2.0 — 使用动态阈值 + 内容感知算法：
+     * 1. 先计算全图的亮度直方图，取中位亮度作为参考
+     * 2. 基于中位亮度动态计算空白阈值（比固定 240 智能得多）
+     * 3. 从四边向中心扫描，找到第一个"非空白"内容边界
+     * 4. 保留边距防止裁切过紧
+     *
      * @param bitmap 源图
-     * @param threshold 空白判定阈值（0-255，越大越敏感，推荐 240）
      * @param margin 保留的边距像素（防止裁切过紧）
+     * @param sensitivity 灵敏度 0.0-1.0（越大越积极裁剪，默认 0.15）
      * @return 裁剪后的 bitmap
      */
-    fun autoCrop(bitmap: Bitmap, threshold: Int = 240, margin: Int = 8): Bitmap {
+    fun autoCrop(bitmap: Bitmap, margin: Int = 8, sensitivity: Float = 0.15f): Bitmap {
         val width = bitmap.width
         val height = bitmap.height
 
         // 计算采样步长（大图加速）
-        val step = if (width * height > 1_000_000) 4 else 2
+        val step = maxOf(1, minOf(width, height) / 200)
 
-        // 判定像素是否为"空白"（近白色）
+        // 1. 计算全图的亮度直方图，确定动态阈值
+        val hist = IntArray(256)
+        for (y in 0 until height step step) {
+            for (x in 0 until width step step) {
+                val p = bitmap.getPixel(x, y)
+                val l = (0.299f * Color.red(p) + 0.587f * Color.green(p) + 0.114f * Color.blue(p)).toInt().coerceIn(0, 255)
+                hist[l]++
+            }
+        }
+
+        // 计算累计直方图，找到中位亮度值
+        val total = (height / step + 1) * (width / step + 1)
+        var cumulative = 0
+        var medianLuma = 128
+        for (i in 0..255) {
+            cumulative += hist[i]
+            if (cumulative >= total / 2) { medianLuma = i; break }
+        }
+
+        // 动态阈值：中位亮度越亮，阈值越高
+        // 中位亮度 200+ → 阈值 ~235（明亮背景）
+        // 中位亮度 128  → 阈值 ~190（普通背景）
+        // 中位亮度 64   → 阈值 ~150（偏暗背景）
+        val threshold = minOf(245, maxOf(140, medianLuma + 60))
+
+        // 判定像素是否为"空白"（基于动态阈值）
         fun isBlank(pixel: Int): Boolean {
             val r = Color.red(pixel)
             val g = Color.green(pixel)
             val b = Color.blue(pixel)
-            return r >= threshold && g >= threshold && b >= threshold
+            // 非白色像素 → 一定不是空白（暗色内容）
+            if (r < threshold * 0.7f || g < threshold * 0.7f || b < threshold * 0.7f) return false
+            // 接近阈值 → 看方差是否小（纯色背景 vs 有细节的内容）
+            val minC = minOf(r, g, b)
+            val maxC = maxOf(r, g, b)
+            val range = maxC - minC
+            return range <= 25   // 颜色变化小的区域视为背景空白
         }
 
-        // 从上往下扫描，找到第一条有内容的行
+        // 从上往下扫描
         var top = 0
         top@ while (top < height) {
+            var blankPixels = 0
+            var totalCheck = 0
             for (x in 0 until width step step) {
-                if (!isBlank(bitmap.getPixel(x, top))) break@top
+                totalCheck++
+                if (isBlank(bitmap.getPixel(x, top))) blankPixels++
             }
+            // 整行空白占比 > (1 - sensitivity) 才视为空白行
+            if (blankPixels.toFloat() / totalCheck <= (1f - sensitivity)) break@top
             top++
         }
 
         // 从下往上扫描
         var bottom = height - 1
         bottom@ while (bottom > top) {
+            var blankPixels = 0
+            var totalCheck = 0
             for (x in 0 until width step step) {
-                if (!isBlank(bitmap.getPixel(x, bottom))) break@bottom
+                totalCheck++
+                if (isBlank(bitmap.getPixel(x, bottom))) blankPixels++
             }
+            if (blankPixels.toFloat() / totalCheck <= (1f - sensitivity)) break@bottom
             bottom--
         }
 
         // 从左往右扫描
         var left = 0
         left@ while (left < width) {
+            var blankPixels = 0
+            var totalCheck = 0
             for (y in top..bottom step step) {
-                if (!isBlank(bitmap.getPixel(left, y))) break@left
+                totalCheck++
+                if (isBlank(bitmap.getPixel(left, y))) blankPixels++
             }
+            if (blankPixels.toFloat() / totalCheck <= (1f - sensitivity)) break@left
             left++
         }
 
         // 从右往左扫描
         var right = width - 1
         right@ while (right > left) {
+            var blankPixels = 0
+            var totalCheck = 0
             for (y in top..bottom step step) {
-                if (!isBlank(bitmap.getPixel(right, y))) break@right
+                totalCheck++
+                if (isBlank(bitmap.getPixel(right, y))) blankPixels++
             }
+            if (blankPixels.toFloat() / totalCheck <= (1f - sensitivity)) break@right
             right--
         }
 
         // 如果全部空白，返回原图
         if (top >= bottom || left >= right) return bitmap
 
-        // 添加边距（避免裁切太紧）
+        // 添加边距
         val croppedLeft = (left - margin).coerceAtLeast(0)
         val croppedTop = (top - margin).coerceAtLeast(0)
         val croppedRight = (right + margin).coerceAtMost(width - 1)
