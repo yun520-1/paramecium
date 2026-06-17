@@ -1,5 +1,6 @@
 package com.heartflow.skills
 
+import com.heartflow.app.BuildConfig
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -11,17 +12,26 @@ import java.util.*
 /**
  * BaiduAISearchSkill - 百度AI搜索技能
  * 支持网页搜索、百度百科、秒懂百科、AI智能生成四种模式
+ *
+ * API 密钥通过 BuildConfig.BAIDU_API_KEY 注入（从 local.properties 读取），
+ * 不硬编码在源码中。请勿提交真实密钥到 git。
  */
 class BaiduAISearchSkill {
     companion object {
-        private const val API_KEY = "bce-v3/ALTAK-VCbLrLdVXHix6aLrf3Fv7/6a3f5b76ac21ee1b3b1d3b4f442f558324e3cdb6"
+        private val API_KEY: String get() = BuildConfig.BAIDU_API_KEY
         private const val BASE_URL = "https://qianfan.baidubce.com/v2/ai_search"
     }
+
+    /**
+     * 检查 API 密钥是否已配置
+     */
+    fun isConfigured(): Boolean = API_KEY.isNotBlank()
     
     /**
      * 网页搜索
      */
     fun webSearch(query: String, limit: Int = 5): String {
+        if (!isConfigured()) return "⚠️ 百度AI搜索未配置，请在 local.properties 中设置 BAIDU_API_KEY"
         return try {
             val encoded = java.net.URLEncoder.encode(query, "UTF-8")
             val url = "$BASE_URL?query=$encoded&limit=$limit&type=web_search"
@@ -61,6 +71,7 @@ class BaiduAISearchSkill {
      * 百度百科
      */
     fun baikeSearch(query: String): String {
+        if (!isConfigured()) return "⚠️ 百度AI搜索未配置，请在 local.properties 中设置 BAIDU_API_KEY"
         return try {
             val encoded = java.net.URLEncoder.encode(query, "UTF-8")
             val url = "$BASE_URL?query=$encoded&type=baike"
@@ -99,6 +110,7 @@ class BaiduAISearchSkill {
      * 秒懂百科（视频）
      */
     fun miaodongBaike(query: String): String {
+        if (!isConfigured()) return "⚠️ 百度AI搜索未配置，请在 local.properties 中设置 BAIDU_API_KEY"
         return try {
             val encoded = java.net.URLEncoder.encode(query, "UTF-8")
             val url = "$BASE_URL?query=$encoded&type=miaodong_baike"
@@ -138,6 +150,7 @@ class BaiduAISearchSkill {
      * AI智能生成
      */
     fun aiChat(query: String): String {
+        if (!isConfigured()) return "⚠️ 百度AI搜索未配置，请在 local.properties 中设置 BAIDU_API_KEY"
         return try {
             val encoded = java.net.URLEncoder.encode(query, "UTF-8")
             val url = "$BASE_URL?query=$encoded&type=ai_chat"

@@ -14,6 +14,7 @@ android {
         targetSdk = 35
         versionCode = 49
         versionName = "2.5.8"
+        buildConfigField("String", "BAIDU_API_KEY", "\"${project.findProperty("BAIDU_API_KEY") ?: ""}\"")
     }
 
     buildTypes {
@@ -34,6 +35,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
