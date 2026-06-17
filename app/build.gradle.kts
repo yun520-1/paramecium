@@ -15,6 +15,8 @@ android {
         versionCode = 50
         versionName = "2.5.9"
         buildConfigField("String", "BAIDU_API_KEY", "\"${project.findProperty("BAIDU_API_KEY") ?: ""}\"")
+        // 只保留 arm64-v8a，减少 APK 体积
+        ndk { abiFilters += "arm64-v8a" }
     }
 
     buildTypes {
@@ -56,4 +58,5 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-compose:3.0.4")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.0.4")
     // org.json 是 Android 内置的，无需额外依赖
+    implementation("org.opencv:opencv:4.10.0")
 }

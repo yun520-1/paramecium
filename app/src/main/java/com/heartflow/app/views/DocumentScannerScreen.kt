@@ -30,6 +30,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -82,17 +83,21 @@ fun DocumentScannerScreen(
     val bitmapLoader = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
-        uri?.let { loadAndSetBitmap(context, it, scope,
-            onLoaded = { bmp ->
-                selectedBitmap = bmp
-                correctedBitmap = null
-                processedBitmap = null
-                saveResult = null
-                errorMessage = null
-                detectionStatus = null
-            },
-            onError = { errorMessage = it }
-        )}
+        uri?.let { targetUri ->
+            scope.launch {
+                loadAndSetBitmap(context, targetUri, scope,
+                    onLoaded = { bmp ->
+                        selectedBitmap = bmp
+                        correctedBitmap = null
+                        processedBitmap = null
+                        saveResult = null
+                        errorMessage = null
+                        detectionStatus = null
+                    },
+                    onError = { errorMessage = it }
+                )
+            }
+        }
     }
 
     Scaffold(
@@ -217,7 +222,7 @@ fun DocumentScannerScreen(
                                 context, correctedBitmap ?: selectedBitmap!!, selectedFilter, selectedFormat,
                                 onStart = { isProcessing = true; errorMessage = null },
                                 onSuccess = { path ->
-                                    processedBitmap = if (selectedFormat == "jpg") withContext(Dispatchers.Default) {
+                                    processedBitmap = if (selectedFormat == "jpg") {
                                         ScanImageProcessor.apply(selectedFilter, correctedBitmap ?: selectedBitmap!!)
                                     } else null
                                     saveResult = path
@@ -418,14 +423,14 @@ private fun FilterItem(
                 .clip(RoundedCornerShape(8.dp))
                 .background(
                     when (filter) {
-                        ScanFilterType.ORIGINAL -> android.graphics.Color.GRAY
-                        ScanFilterType.AUTO_ENHANCE -> android.graphics.Color.rgb(76, 175, 80)
-                        ScanFilterType.WHITE_DOCUMENT -> android.graphics.Color.WHITE
-                        ScanFilterType.BLACK_AND_WHITE -> android.graphics.Color.BLACK
-                        ScanFilterType.REMOVE_NOISE -> android.graphics.Color.rgb(33, 150, 243)
-                        ScanFilterType.BRIGHTEN -> android.graphics.Color.rgb(255, 235, 59)
-                        ScanFilterType.SHARPEN_TEXT -> android.graphics.Color.rgb(156, 39, 176)
-                        ScanFilterType.RECEIPT -> android.graphics.Color.rgb(255, 152, 0)
+                        ScanFilterType.ORIGINAL -> Color(0xFF888888)
+                        ScanFilterType.AUTO_ENHANCE -> Color(0xFF4CAF50)
+                        ScanFilterType.WHITE_DOCUMENT -> Color.White
+                        ScanFilterType.BLACK_AND_WHITE -> Color.Black
+                        ScanFilterType.REMOVE_NOISE -> Color(0xFF2196F3)
+                        ScanFilterType.BRIGHTEN -> Color(0xFFFFEB3B)
+                        ScanFilterType.SHARPEN_TEXT -> Color(0xFF9C27B0)
+                        ScanFilterType.RECEIPT -> Color(0xFFFF9800)
                     }
                 ),
             contentAlignment = Alignment.Center
@@ -495,8 +500,7 @@ private fun DualPreviewPane(
 ) {
     Row(
         modifier = Modifier
-            .fillMaxWidth()
-            .weight(1f),
+            .fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         // 原图侧
@@ -595,7 +599,7 @@ private fun EmptyState() {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .weight(1f),
+            .heightIn(min = 200.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         )
@@ -815,7 +819,7 @@ private fun saveScannedDocument(
     val fileName = "scan_${filterName}_$timestamp"
 
     return if (format == "pdf") {
-        PdfExporter(context).exportToPdf(bitmap, fileName)
+        PdfExporter(context).exportToPdf(bitmap, fileName) ?: throw Exception("PDF 导出失败")
     } else {
         ImageProcessor(context).saveToGallery(
             bitmap = bitmap,
