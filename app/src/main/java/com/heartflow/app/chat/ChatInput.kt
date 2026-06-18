@@ -206,6 +206,34 @@ fun ChatInput(
                                 Icon(Icons.Default.Stop, "停止", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
                             }
                         }
+                        // ── 音量可视化柱状指示器 ──
+                        Row(
+                            modifier = Modifier.fillMaxWidth().height(24.dp).padding(top = 4.dp),
+                            verticalAlignment = Alignment.Bottom,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            // 8 根音量柱
+                            for (i in 0 until 8) {
+                                val barFraction = ((i + 1) / 8f)
+                                val barHeight = if (voiceState.volumeLevel >= barFraction)
+                                    8f + (voiceState.volumeLevel.coerceAtMost(1f) * 16f)
+                                else
+                                    3f
+                                val barColor = when {
+                                    voiceState.volumeLevel > 0.7f -> Color(0xFFEF5350) // 大声：红色
+                                    voiceState.volumeLevel > 0.4f -> Color(0xFFFFA726) // 中等：橙色
+                                    else -> Color(0xFF66BB6A) // 安静：绿色
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .width(4.dp)
+                                        .height(barHeight.dp)
+                                        .padding(horizontal = 2.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(barColor.copy(alpha = 0.8f))
+                                )
+                            }
+                        }
                         // ── 部分识别结果（实时显示） ──
                         if (voiceState.partialResult != null) {
                             Text(

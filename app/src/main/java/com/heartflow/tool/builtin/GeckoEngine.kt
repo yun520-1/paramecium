@@ -7,16 +7,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.ContentBlocking
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoRuntimeSettings
 import org.mozilla.geckoview.GeckoSession
-import org.mozilla.geckoview.GeckoSession.AllowOrDeny
-import org.mozilla.geckoview.GeckoSession.ContentDelegate
-import org.mozilla.geckoview.GeckoSession.NavigationDelegate
-import org.mozilla.geckoview.GeckoSession.ProgressDelegate
 import org.mozilla.geckoview.GeckoSessionSettings
+import org.mozilla.geckoview.WebResponse
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -86,6 +84,16 @@ class GeckoEngine private constructor(context: Context) {
     // ── 广告过滤 ────────────────────────────────────────────
     var adBlockEnabled by mutableStateOf(true)
 
+    // ── 页面查找 ────────────────────────────────────────────
+    var isFindActive by mutableStateOf(false)
+    var findQueryText by mutableStateOf("")
+    var findResultText by mutableStateOf("")
+        private set
+
+    // ── 全屏模式 ──────────────────────────────────────────
+    var isFullscreen by mutableStateOf(false)
+        private set
+
     // ── 下载监听回调 ────────────────────────────────────────
     var onDownloadRequested: ((url: String, mimeType: String, contentLength: Long) -> Unit)? = null
 
@@ -107,13 +115,13 @@ class GeckoEngine private constructor(context: Context) {
         // 内容屏蔽设置：禁用 ETP（URL 广告过滤由 NavigationDelegate 接管），
         // 允许所有 cookie，防止 ERR_BLOCKED_BY_ORB 等问题
         val contentBlockingSettings = ContentBlocking.Settings.Builder()
-            .setEnhancedTrackingProtectionLevel(ContentBlocking.EtpLevel.NONE)
-            .setCookieBehavior(ContentBlocking.CookieBehavior.ACCEPT_ALL)
+            .enhancedTrackingProtectionLevel(ContentBlocking.EtpLevel.NONE)
+            .cookieBehavior(ContentBlocking.CookieBehavior.ACCEPT_ALL)
             .build()
 
         val settingsBuilder = GeckoRuntimeSettings.Builder()
             .remoteDebuggingEnabled(true)
-            .setAllowInsecureConnections(true) // 允许不安全的连接（HTTP 混合内容），修复部分页面加载问题
+            .allowInsecureConnections(GeckoRuntimeSettings.ALLOW_ALL) // 允许不安全的连接（HTTP 混合内容），修复部分页面加载问题
             .contentBlocking(contentBlockingSettings)
 
         // 创建运行时
@@ -213,7 +221,7 @@ class GeckoEngine private constructor(context: Context) {
 
     private fun setupSessionDelegates(session: GeckoSession) {
         // ── 内容代理：标题、外部响应（下载）、上下文菜单等 ──
-        session.contentDelegate = object : ContentDelegate {
+        session.contentDelegate = object : GeckoSession.ContentDelegate {
             override fun onTitleChange(session: GeckoSession, title: String?) {
                 postOnMain {
                     pageTitle = title ?: ""
@@ -225,14 +233,16 @@ class GeckoEngine private constructor(context: Context) {
 
             override fun onExternalResponse(
                 session: GeckoSession,
-                response: GeckoSession.WebResponseInfo
+                response: WebResponse
             ) {
                 // 拦截文件下载（非 HTML 资源）
                 postOnMain {
+                    val mimeType = response.headers["Content-Type"] ?: "application/octet-stream"
+                    val contentLength = response.headers["Content-Length"]?.toLongOrNull() ?: -1L
                     onDownloadRequested?.invoke(
                         response.uri,
-                        response.contentType ?: "application/octet-stream",
-                        response.contentLength
+                        mimeType,
+                        contentLength
                     )
                 }
             }
@@ -241,18 +251,18 @@ class GeckoEngine private constructor(context: Context) {
                 session: GeckoSession,
                 screenX: Int,
                 screenY: Int,
-                element: ContentDelegate.ContextElement
+                element: GeckoSession.ContentDelegate.ContextElement
             ) {
                 // 长按链接/图片等弹出上下文菜单
                 postOnMain {
                     onContextMenuRequested?.invoke(
-                        linkUri = element.linkUri,
-                        linkText = element.linkText,
-                        srcUri = element.srcUri,
-                        elementType = when (element.type) {
-                            ContentDelegate.ContextElement.TYPE_IMAGE -> "image"
-                            ContentDelegate.ContextElement.TYPE_VIDEO -> "video"
-                            ContentDelegate.ContextElement.TYPE_AUDIO -> "audio"
+                        element.linkUri,
+                        element.linkText,
+                        element.srcUri,
+                        when (element.type) {
+                            GeckoSession.ContentDelegate.ContextElement.TYPE_IMAGE -> "image"
+                            GeckoSession.ContentDelegate.ContextElement.TYPE_VIDEO -> "video"
+                            GeckoSession.ContentDelegate.ContextElement.TYPE_AUDIO -> "audio"
                             else -> "link"
                         }
                     )
@@ -261,7 +271,7 @@ class GeckoEngine private constructor(context: Context) {
         }
 
         // ── 进度代理：页面加载状态 ────────────────────────
-        session.progressDelegate = object : ProgressDelegate {
+        session.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onPageStart(session: GeckoSession, url: String) {
                 postOnMain {
                     isLoading = true
@@ -299,7 +309,7 @@ class GeckoEngine private constructor(context: Context) {
         }
 
         // ── 导航代理：前进/后退/位置变更/广告过滤 ────────
-        session.navigationDelegate = object : NavigationDelegate {
+        session.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
                 postOnMain { this@GeckoEngine.canGoBack = canGoBack }
             }
@@ -326,7 +336,7 @@ class GeckoEngine private constructor(context: Context) {
 
             override fun onLoadRequest(
                 session: GeckoSession,
-                request: NavigationDelegate.LoadRequest
+                request: GeckoSession.NavigationDelegate.LoadRequest
             ): GeckoResult<AllowOrDeny>? {
                 // 广告过滤：在请求加载前拦截已知广告域名
                 if (adBlockEnabled && request.uri != null) {
@@ -338,7 +348,8 @@ class GeckoEngine private constructor(context: Context) {
                 return null // null = 允许导航，由 GeckoView 自行决定
             }
         }
-    }
+
+        }
 
     // ══════════════════════════════════════════════════════════
     // 导航方法
@@ -396,6 +407,58 @@ class GeckoEngine private constructor(context: Context) {
         postOnMain { session.stop() }
     }
 
+    // ══════════════════════════════════════════════════════════
+    // 页面查找
+    // ══════════════════════════════════════════════════════════
+
+    /** 页面内查找 */
+    fun findInPage(query: String) {
+        if (query.isBlank()) {
+            clearFindInPage()
+            return
+        }
+        findQueryText = query
+        isFindActive = true
+        postOnMain {
+            val finder = session.getFinder()
+            // 设置显示选项：高亮所有匹配
+            finder.setDisplayFlags(1) // FLAG_HIGHLIGHT_ALL
+            // 执行查找（flags: 0 = 向前查找）
+            finder.find(query, 0).accept({ result ->
+                postOnMain {
+                    if (result != null) {
+                        findResultText = if (result.total == 0) "未找到"
+                        else "第 ${result.current}/${result.total} 个匹配"
+                    } else {
+                        findResultText = "未找到"
+                    }
+                }
+            })
+        }
+    }
+
+    /** 清除查找高亮并关闭查找模式 */
+    fun clearFindInPage() {
+        isFindActive = false
+        findQueryText = ""
+        findResultText = ""
+        postOnMain { session.getFinder().clear() }
+    }
+
+    // ══════════════════════════════════════════════════════════
+    // 全屏模式
+    // ══════════════════════════════════════════════════════════
+
+    /** 切换全屏模式 */
+    fun toggleFullscreen() {
+        isFullscreen = !isFullscreen
+    }
+
+    /** 退出全屏模式 */
+    fun exitFullscreen() {
+        isFullscreen = false
+    }
+
     /** 关闭浏览器所有标签页 */
     fun close() {
         isClosed = true
@@ -426,21 +489,17 @@ class GeckoEngine private constructor(context: Context) {
     private fun applyUserAgentToSession(session: GeckoSession) {
         val settings = session.settings
         if (userAgentMode == "desktop") {
-            settings.setInt(
-                GeckoSessionSettings.USER_AGENT_MODE,
+            settings.setUserAgentMode(
                 GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
             )
-            settings.setInt(
-                GeckoSessionSettings.VIEWPORT_MODE,
+            settings.setViewportMode(
                 GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
             )
         } else {
-            settings.setInt(
-                GeckoSessionSettings.USER_AGENT_MODE,
+            settings.setUserAgentMode(
                 GeckoSessionSettings.USER_AGENT_MODE_MOBILE
             )
-            settings.setInt(
-                GeckoSessionSettings.VIEWPORT_MODE,
+            settings.setViewportMode(
                 GeckoSessionSettings.VIEWPORT_MODE_MOBILE
             )
         }

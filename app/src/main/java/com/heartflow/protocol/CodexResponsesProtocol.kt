@@ -307,9 +307,16 @@ class CodexResponsesProtocol : ModelProtocol {
                                         val index = event.optInt("index", toolCallBuilders.size)
                                         val builder = toolCallBuilders.getOrPut(index) { ToolCallBuilder() }
                                         builder.id = item.optString("id", builder.id)
-                                        builder.name = item.optString("name", builder.name)
+                                        val newName = item.optString("name", "")
+                                        if (newName.isNotEmpty() && builder.name.isEmpty()) {
+                                            builder.name = newName
+                                            callback.onToolCallStart(index, builder.id, newName)
+                                        }
                                         val argsDelta = item.optString("arguments", "")
-                                        if (argsDelta.isNotEmpty()) builder.arguments.append(argsDelta)
+                                        if (argsDelta.isNotEmpty()) {
+                                            builder.arguments.append(argsDelta)
+                                            callback.onToolCallArgument(argsDelta, index)
+                                        }
                                     }
                                     "error" -> {
                                         errorMessage = "Codex流式错误: ${item.opt("error")}"

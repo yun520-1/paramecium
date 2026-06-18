@@ -292,6 +292,7 @@ fun ChatPage(viewModel: ChatViewModel, uiState: ChatUiState) {
                     message = message,
                     index = index,
                     speakingMessageIndex = uiState.speakingMessageIndex,
+                    ttsPlaybackState = uiState.ttsPlaybackState,
                     onEdit = { idx ->
                         editMessageIndex = idx
                         editText = message.content
@@ -304,7 +305,9 @@ fun ChatPage(viewModel: ChatViewModel, uiState: ChatUiState) {
                     },
                     onCancelTool = { idx -> viewModel.cancelToolCall(idx) },
                     onSpeak = { idx -> viewModel.speakMessage(idx) },
-                    onStopSpeak = { viewModel.stopSpeaking() }
+                    onStopSpeak = { viewModel.stopSpeaking() },
+                    onPauseSpeak = { viewModel.pauseSpeaking() },
+                    onResumeSpeak = { viewModel.resumeSpeaking() }
                 )
             } }
 

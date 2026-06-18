@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.heartflow.app.tts.TextToSpeechManager
 import com.heartflow.app.views.BrowserCommand
+import com.heartflow.app.voice.VoiceRecognitionManager
 import com.heartflow.client.ModelClientBridge
 import com.heartflow.data.*
 import com.heartflow.engine.HeartEngine
@@ -51,6 +52,7 @@ data class VoiceUiState(
     val recordingDuration: Int = 0, // seconds
     val partialResult: String? = null,   // 语音识别部分结果（实时显示）
     val voiceError: String? = null,      // 语音识别错误消息
+    val volumeLevel: Float = 0f,         // 实时音量级别 0.0~1.0（VAD 驱动）
     val audioFile: String? = null,
     val isPlaying: Boolean = false,
     val transcription: String? = null
@@ -83,7 +85,9 @@ data class ChatUiState(
     val currentPage: String = "chat",
     val fontSize: Float = 14f,
     val voiceState: VoiceUiState = VoiceUiState(),
-    val speakingMessageIndex: Int? = null
+    val speakingMessageIndex: Int? = null,
+    /** TTS 播放状态："idle" / "playing" / "paused" */
+    val ttsPlaybackState: String = "idle"
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -133,7 +137,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var isLoopCancelled = false
     companion object { private const val TAG = "ChatViewModel" }
     val ttsManager = TextToSpeechManager(getApplication())
-    private var audioInputManager: AudioInputManager? = null
+    private var voiceManager: VoiceRecognitionManager? = null
     private var durationJob: Job? = null
     private var startTimeMs: Long = 0
 
@@ -999,14 +1003,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         sendMessage(text)
     }
 
-    // ── 语音输入（AudioInputManager） ──────────────────────────
+    // ── 语音输入（VoiceRecognitionManager） ─────────────────────
 
     /**
      * 开始语音识别 — 由 ChatInput 在获取录音权限后调用
      */
     fun startListening() {
         // 如果已经在录音，不重复启动
-        if (audioInputManager != null) return
+        if (voiceManager != null) return
 
         // 录音计时器（每秒更新一次录音时长）
         startTimeMs = System.currentTimeMillis()
@@ -1021,8 +1025,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // 初始化语音输入管理器，与应用 Application 生命周期绑定
-        audioInputManager = AudioInputManager(
+        // 初始化语音识别管理器（VAD 增强版，带音量回调）
+        voiceManager = VoiceRecognitionManager(
             context = getApplication(),
             scope = viewModelScope,
             onResult = { text ->
@@ -1045,6 +1049,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 )
             },
+            onVolumeChanged = { level ->
+                // 实时音量级别（VAD 驱动，0.0~1.0），供 UI 可视化
+                _uiState.value = _uiState.value.copy(
+                    voiceState = _uiState.value.voiceState.copy(
+                        volumeLevel = level
+                    )
+                )
+            },
             onError = { error ->
                 // 识别出错：停止录音并显示错误提示
                 durationJob?.cancel()
@@ -1058,7 +1070,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         )
-        audioInputManager?.start()
+        voiceManager?.start()
     }
 
     /**
@@ -1067,8 +1079,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun stopListening() {
         durationJob?.cancel()
         durationJob = null
-        audioInputManager?.stop()
-        audioInputManager = null
+        voiceManager?.stop()
+        voiceManager = null
         _uiState.value = _uiState.value.copy(
             voiceState = _uiState.value.voiceState.copy(
                 isRecording = false,
@@ -1097,15 +1109,57 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (index < 0 || index >= messages.size) return
         val msg = messages[index]
         if (msg.isUser || msg.isStreaming || msg.content.isBlank()) return
-        _uiState.value = _uiState.value.copy(speakingMessageIndex = index)
+        _uiState.value = _uiState.value.copy(speakingMessageIndex = index, ttsPlaybackState = "playing")
         ttsManager.speak(msg.content) {
-            _uiState.value = _uiState.value.copy(speakingMessageIndex = null)
+            _uiState.value = _uiState.value.copy(speakingMessageIndex = null, ttsPlaybackState = "idle")
         }
     }
 
     fun stopSpeaking() {
         ttsManager.stop()
-        _uiState.value = _uiState.value.copy(speakingMessageIndex = null)
+        _uiState.value = _uiState.value.copy(speakingMessageIndex = null, ttsPlaybackState = "idle")
+    }
+
+    /** 暂停 TTS 朗读（保留当前位置） */
+    fun pauseSpeaking() {
+        ttsManager.pause()
+        _uiState.value = _uiState.value.copy(ttsPlaybackState = "paused")
+    }
+
+    /** 恢复被暂停的 TTS 朗读 */
+    fun resumeSpeaking() {
+        ttsManager.resume()
+        _uiState.value = _uiState.value.copy(ttsPlaybackState = "playing")
+    }
+
+    /** 将多条消息加入朗读队列，依次朗读 */
+    fun speakMessageQueued(indices: List<Int>) {
+        if (indices.isEmpty()) return
+        val messages = _uiState.value.messages
+        val speakable = indices.mapNotNull { i ->
+            if (i in messages.indices && !messages[i].isUser && !messages[i].isStreaming && messages[i].content.isNotBlank())
+                i to messages[i].content
+            else null
+        }
+        if (speakable.isEmpty()) return
+
+        var currentQueueIndex = 0
+        _uiState.value = _uiState.value.copy(ttsPlaybackState = "playing")
+        fun enqueueNext() {
+            if (currentQueueIndex < speakable.size) {
+                val (idx, text) = speakable[currentQueueIndex]
+                _uiState.value = _uiState.value.copy(speakingMessageIndex = idx)
+                ttsManager.speakQueued(text) {
+                    currentQueueIndex++
+                    if (currentQueueIndex >= speakable.size) {
+                        _uiState.value = _uiState.value.copy(speakingMessageIndex = null, ttsPlaybackState = "idle")
+                    } else {
+                        enqueueNext()
+                    }
+                }
+            }
+        }
+        enqueueNext()
     }
 
     fun updateTtsSettings(speed: Float, pitch: Float) {
@@ -1266,8 +1320,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        audioInputManager?.destroy()
-        audioInputManager = null
+        voiceManager?.destroy()
+        voiceManager = null
         durationJob?.cancel()
         durationJob = null
         ttsManager.shutdown()

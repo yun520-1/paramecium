@@ -1,10 +1,12 @@
 package com.heartflow.app.views
 
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.heartflow.app.browser.BookmarkManager
 import com.heartflow.tool.builtin.BrowserTab
 import com.heartflow.tool.builtin.GeckoEngine
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -73,10 +75,10 @@ class BrowserViewModel : ViewModel() {
     val browserCommand: SharedFlow<BrowserCommand> = _browserCommand.asSharedFlow()
 
     /** 地址栏当前显示/输入的 URL */
-    var url by mutableStateOf("https://wm.m.sm.cn/?from=wm828952")
+    var url by mutableStateOf("about:blank")
 
     /** 名称固定的主页 URL */
-    var homeUrl = "https://wm.m.sm.cn/?from=wm828952"
+    var homeUrl = "about:blank"
 
     /** GeckoView 实例引用 — 由 BrowserScreen 在创建时赋值 */
     var geckoViewRef by mutableStateOf<org.mozilla.geckoview.GeckoView?>(null)
@@ -158,6 +160,112 @@ class BrowserViewModel : ViewModel() {
     fun toggleUserAgent() {
         engine.toggleUserAgent()
         userAgentMode = engine.userAgentMode
+    }
+
+    // ══════════════════════════════════════════════════════════
+    // 书签管理
+    // ══════════════════════════════════════════════════════════
+
+    private val bookmarkManager: BookmarkManager
+        get() = BookmarkManager.getInstance()
+
+    /** 获取书签列表 */
+    val bookmarks: List<com.heartflow.app.browser.Bookmark>
+        get() = bookmarkManager.getAllBookmarks()
+
+    /** 切换书签收藏状态，返回收藏后的状态 */
+    fun toggleBookmark(url: String, title: String): Boolean {
+        return bookmarkManager.toggleBookmark(url, title)
+    }
+
+    /** 检查是否已收藏 */
+    fun isBookmarked(url: String): Boolean = bookmarkManager.isBookmarked(url)
+
+    /** 移除书签 */
+    fun removeBookmark(url: String) = bookmarkManager.removeBookmark(url)
+
+    /** 清除所有书签 */
+    fun clearAllBookmarks() = bookmarkManager.clearAll()
+
+    // ══════════════════════════════════════════════════════════
+    // 页面查找（findInPage）
+    // ══════════════════════════════════════════════════════════
+
+    /** 是否显示查找栏 */
+    var isFindInPageVisible by mutableStateOf(false)
+
+    /** 查找栏输入文本 */
+    var findQueryText by mutableStateOf("")
+
+    /** 显示/隐藏查找栏 */
+    fun toggleFindInPage() {
+        isFindInPageVisible = !isFindInPageVisible
+        if (!isFindInPageVisible) {
+            findQueryText = ""
+            engine.clearFindInPage()
+        }
+    }
+
+    /** 执行查找 */
+    fun findInPage(query: String) {
+        findQueryText = query
+        engine.findInPage(query)
+    }
+
+    /** 清除查找 */
+    fun clearFindInPage() {
+        findQueryText = ""
+        isFindInPageVisible = false
+        engine.clearFindInPage()
+    }
+
+    // ══════════════════════════════════════════════════════════
+    // 全屏模式
+    // ══════════════════════════════════════════════════════════
+
+    /** 切换全屏 */
+    fun toggleFullscreen() {
+        engine.toggleFullscreen()
+    }
+
+    // ══════════════════════════════════════════════════════════
+    // 下载管理增强
+    // ══════════════════════════════════════════════════════════
+
+    /** 是否显示下载对话框 */
+    var showDownloadsDialog by mutableStateOf(false)
+
+    /** 下载任务列表增强：添加到 _downloads 并保持提醒 */
+    fun addDownload(url: String, mimeType: String, contentLength: Long) {
+        _downloads.add(0, DownloadInfo(url, mimeType, contentLength))
+        if (_downloads.size > 100) _downloads.removeAt(_downloads.lastIndex)
+        lastDownloadInfo = "$url ($mimeType, ${contentLength / 1024}KB)"
+    }
+
+    // ══════════════════════════════════════════════════════════
+    // 标签页关闭确认
+    // ══════════════════════════════════════════════════════════
+
+    /** 待确认关闭的标签页索引（-1 表示无待确认） */
+    var pendingCloseTabIndex by mutableIntStateOf(-1)
+
+    /** 请求关闭标签页（显示确认对话框） */
+    fun requestCloseTab(index: Int) {
+        pendingCloseTabIndex = index
+    }
+
+    /** 确认关闭标签页 */
+    fun confirmCloseTab() {
+        val idx = pendingCloseTabIndex
+        if (idx >= 0 && idx < engine.tabs.size) {
+            closeTab(idx)
+        }
+        pendingCloseTabIndex = -1
+    }
+
+    /** 取消关闭 */
+    fun cancelCloseTab() {
+        pendingCloseTabIndex = -1
     }
 
     // ══════════════════════════════════════════════════════════

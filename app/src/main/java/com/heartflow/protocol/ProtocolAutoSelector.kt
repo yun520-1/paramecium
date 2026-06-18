@@ -55,9 +55,8 @@ object ProtocolAutoSelector {
      */
     private fun isAnthropicApi(url: String): Boolean {
         return url.contains("anthropic") ||
-               url.contains("claude") ||
                url.contains(".anthropic.com") ||
-               url.contains("api.anthropic")
+               url.contains("/v1/messages")
     }
 
     /**
@@ -66,8 +65,7 @@ object ProtocolAutoSelector {
     private fun isCodexApi(url: String, model: String): Boolean {
         return (url.contains("openai") && url.contains("responses")) ||
                model.contains("codex") ||
-               model.contains("o1") ||
-               model.contains("o3")
+               Regex("\\bo[13]\\b").containsMatchIn(model)
     }
 
     /**

@@ -23,6 +23,8 @@ class WebViewEngine(private val context: Context) {
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
     }
 
+    private var cachedWebView: WebView? = null
+
     /**
      * 同步方式加载页面并提取内容（在IO线程调用）
      */
@@ -33,16 +35,9 @@ class WebViewEngine(private val context: Context) {
         // WebView必须在主线程创建和操作
         Handler(Looper.getMainLooper()).post {
             try {
-                val webView = WebView(context.applicationContext).apply {
-                    settings.apply {
-                        javaScriptEnabled = true
-                        domStorageEnabled = true
-                        loadWithOverviewMode = true
-                        userAgentString = USER_AGENT
-                        mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                    }
-                    setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
-                }
+                val webView = cachedWebView ?: createWebView().also { cachedWebView = it }
+                // 重置 WebView 状态以备复用
+                webView.stopLoading()
 
                 val pageLoaded = CountDownLatch(1)
                 var finalUrl = url
@@ -117,13 +112,16 @@ class WebViewEngine(private val context: Context) {
                             resultRef.set(sb.toString())
                         }
 
+                        // 不复用destroy，仅停止加载以备下次复用
                         webView.stopLoading()
-                        webView.destroy()
                         latch.countDown()
                     }
                 }, 1500)
 
             } catch (e: Exception) {
+                // 异常时销毁并重建
+                cachedWebView?.destroy()
+                cachedWebView = null
                 resultRef.set("❌ 浏览器错误: ${e.message}")
                 latch.countDown()
             }
@@ -132,6 +130,29 @@ class WebViewEngine(private val context: Context) {
         latch.await(timeoutMs, TimeUnit.MILLISECONDS)
         val result = resultRef.get()
         return if (result.isNotBlank()) result else "❌ 页面加载超时: $url"
+    }
+
+    private fun createWebView(): WebView {
+        return WebView(context.applicationContext).apply {
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                loadWithOverviewMode = true
+                userAgentString = USER_AGENT
+                mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            }
+            setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
+        }
+    }
+
+    /**
+     * 释放 WebView 资源，不再需要引擎时调用
+     */
+    fun destroy() {
+        Handler(Looper.getMainLooper()).post {
+            cachedWebView?.destroy()
+            cachedWebView = null
+        }
     }
 
     private fun extractField(json: String, field: String): String {

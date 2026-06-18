@@ -223,6 +223,7 @@ class AnthropicMessagesProtocol : ModelProtocol {
         val reasoningBuilder = StringBuilder()
         val toolCallBuilders = mutableMapOf<Int, ToolCallBuilder>()
         val latch = CountDownLatch(1)
+        val latchReleased = java.util.concurrent.atomic.AtomicBoolean(false)
         var errorMessage: String? = null
 
         val call = client.newCall(request)
@@ -230,15 +231,16 @@ class AnthropicMessagesProtocol : ModelProtocol {
 
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: java.io.IOException) {
-                errorMessage = e.message
-                latch.countDown()
+                if (latchReleased.compareAndSet(false, true)) {
+                    errorMessage = e.message
+                    latch.countDown()
+                }
             }
 
             override fun onResponse(call: Call, response: Response) {
                 try {
                     if (!response.isSuccessful) {
                         errorMessage = "Anthropic HTTP ${response.code}"
-                        latch.countDown()
                         return
                     }
 
@@ -313,12 +315,13 @@ class AnthropicMessagesProtocol : ModelProtocol {
                             } catch (_: Exception) { }
                         }
                     }
-
-                    callback.onComplete?.invoke(textBuilder.toString())
-                    latch.countDown()
                 } catch (e: Exception) {
                     errorMessage = e.message
-                    latch.countDown()
+                } finally {
+                    if (latchReleased.compareAndSet(false, true)) {
+                        callback.onComplete?.invoke(textBuilder.toString())
+                        latch.countDown()
+                    }
                 }
             }
         })

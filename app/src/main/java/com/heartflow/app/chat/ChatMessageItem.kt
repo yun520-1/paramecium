@@ -41,12 +41,15 @@ fun ChatMessageItem(
     message: ChatUiMessage,
     index: Int = 0,
     speakingMessageIndex: Int? = null,
+    ttsPlaybackState: String = "idle",
     onEdit: ((Int) -> Unit)? = null,
     onResend: ((Int) -> Unit)? = null,
     onImageClick: ((MediaAttachment) -> Unit)? = null,
     onCancelTool: ((Int) -> Unit)? = null,
     onSpeak: ((Int) -> Unit)? = null,
-    onStopSpeak: (() -> Unit)? = null
+    onStopSpeak: (() -> Unit)? = null,
+    onPauseSpeak: (() -> Unit)? = null,
+    onResumeSpeak: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     var showMenu by remember { mutableStateOf(false) }
@@ -392,13 +395,41 @@ fun ChatMessageItem(
                                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                                 horizontalArrangement = Arrangement.End
                             ) {
+                                val isSpeakingThis = speakingMessageIndex == index
+
+                                // 暂停/恢复按钮（仅当前朗读的消息显示）
+                                if (isSpeakingThis) {
+                                    val isPaused = ttsPlaybackState == "paused"
+                                    Surface(
+                                        onClick = {
+                                            if (isPaused) onResumeSpeak?.invoke()
+                                            else onPauseSpeak?.invoke()
+                                        },
+                                        shape = CircleShape,
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                                        tonalElevation = 0.dp,
+                                        modifier = Modifier.size(30.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                                contentDescription = if (isPaused) "恢复朗读" else "暂停朗读",
+                                                modifier = Modifier.size(16.dp),
+                                                tint = primaryColor.copy(alpha = 0.6f)
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.width(6.dp))
+                                }
+
+                                // 停止/朗读按钮
                                 Surface(
                                     onClick = {
-                                        if (speakingMessageIndex == index) onStopSpeak?.invoke()
+                                        if (isSpeakingThis) onStopSpeak?.invoke()
                                         else onSpeak?.invoke(index)
                                     },
                                     shape = CircleShape,
-                                    color = if (speakingMessageIndex == index)
+                                    color = if (isSpeakingThis)
                                         MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
                                     else
                                         primaryColor.copy(alpha = 0.08f),
@@ -407,10 +438,10 @@ fun ChatMessageItem(
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
                                         Icon(
-                                            imageVector = if (speakingMessageIndex == index) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
-                                            contentDescription = if (speakingMessageIndex == index) "停止朗读" else "朗读",
+                                            imageVector = if (isSpeakingThis) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
+                                            contentDescription = if (isSpeakingThis) "停止朗读" else "朗读",
                                             modifier = Modifier.size(16.dp),
-                                            tint = if (speakingMessageIndex == index)
+                                            tint = if (isSpeakingThis)
                                                 MaterialTheme.colorScheme.error
                                             else
                                                 primaryColor.copy(alpha = 0.6f)

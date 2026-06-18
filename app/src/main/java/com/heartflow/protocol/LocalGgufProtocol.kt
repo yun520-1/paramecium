@@ -7,7 +7,6 @@ import com.heartflow.engine.ToolRegistry
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.MediaType.Companion.toMediaType
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -200,7 +199,7 @@ class LocalGgufProtocol : ModelProtocol {
 
                                 // 提取工具调用
                                 message.optJSONArray("tool_calls")?.let { toolCalls ->
-                                    appendToolCallDeltas(toolCallBuilders, toolCalls)
+                                    appendToolCallDeltas(toolCallBuilders, toolCalls, callback)
                                 }
 
                                 // 检查结束标志
@@ -236,16 +235,25 @@ class LocalGgufProtocol : ModelProtocol {
         return ModelCompletionResponse(textBuilder.toString(), "", toolCalls)
     }
 
-    private fun appendToolCallDeltas(builders: MutableMap<Int, ToolCallBuilder>, toolCalls: JSONArray) {
+    private fun appendToolCallDeltas(builders: MutableMap<Int, ToolCallBuilder>, toolCalls: JSONArray, callback: ModelStreamCallback) {
         for (i in 0 until toolCalls.length()) {
             val item = toolCalls.optJSONObject(i) ?: continue
             val index = i
             val builder = builders.getOrPut(index) { ToolCallBuilder() }
 
-            item.optString("name").takeIf { it.isNotEmpty() }?.let { builder.name = it }
-            item.optString("id").takeIf { it.isNotEmpty() }?.let { builder.id = it }
+            val newName = item.optString("name").takeIf { it.isNotEmpty() }
+            if (newName != null && builder.name.isEmpty()) {
+                builder.name = newName
+                callback.onToolCallStart(index, builder.id, newName)
+            }
+            val newId = item.optString("id").takeIf { it.isNotEmpty() }
+            if (newId != null) builder.id = newId
             item.optJSONObject("function")?.let { function ->
-                function.optString("arguments").takeIf { it.isNotEmpty() }?.let { builder.arguments.append(it) }
+                val argsDelta = function.optString("arguments").takeIf { it.isNotEmpty() }
+                if (argsDelta != null) {
+                    builder.arguments.append(argsDelta)
+                    callback.onToolCallArgument(argsDelta, index)
+                }
             }
         }
     }

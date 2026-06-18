@@ -201,7 +201,7 @@ fun DocumentScannerScreen(
                         scope.launch {
                             runAutoScan(
                                 context, selectedBitmap!!,
-                                onStart = { isProcessing = true; autoScanInfo = null; errorMessage = null },
+                                onStart = { isProcessing = true; autoScanInfo = null; errorMessage = null; correctedBitmap = null; processedBitmap = null },
                                 onSuccess = { result, info ->
                                     correctedBitmap = result
                                     processedBitmap = result
@@ -217,7 +217,7 @@ fun DocumentScannerScreen(
                         scope.launch {
                             runDocumentCorrection(
                                 context, selectedBitmap!!,
-                                onStart = { isProcessing = true; detectionStatus = null; errorMessage = null },
+                                onStart = { isProcessing = true; detectionStatus = null; errorMessage = null; correctedBitmap = null; processedBitmap = null },
                                 onSuccess = { corrected, note ->
                                     correctedBitmap = corrected
                                     processedBitmap = corrected
@@ -796,7 +796,7 @@ private suspend fun runDocumentCorrection(
                     // 矫正后的区域面积不能太小（至少占原图 5%）
                     val qArea = computeQuadArea(corners)
                     val imgArea = bitmap.width * bitmap.height
-                    if (qArea < imgArea * 0.05f) {
+                    if (qArea < imgArea * 0.03f) {
                         null to bitmap
                     } else {
                         // ── 第 1 步：透视变换（将文档区域矫正为矩形）──
@@ -898,7 +898,7 @@ private suspend fun runAutoScan(
  */
 private fun autoCropScanResult(context: Context, bitmap: Bitmap): Bitmap {
     // 优先使用 OpenCV 轮廓检测（精度更高）
-    val contourCropped = DocumentScanner.contourAutoCrop(bitmap, margin = 20, minAreaRatio = 0.15f)
+    val contourCropped = DocumentScanner.contourAutoCrop(bitmap, margin = 10, minAreaRatio = 0.08f)
     // 如果 OpenCV 不可用或裁剪无效，降级到纯 Kotlin 实现
     return if (contourCropped === bitmap) {
         ImageProcessor(context).autoCrop(bitmap)
