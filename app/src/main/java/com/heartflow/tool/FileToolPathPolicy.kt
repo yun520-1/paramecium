@@ -23,9 +23,6 @@ object FileToolPathPolicy {
      */
     @Throws(IOException::class)
     fun resolve(context: ToolContext, inputPath: String): File {
-        if (context == null) {
-            throw IOException("工具上下文为空")
-        }
         return resolveWithExtraRoots(
             context.homePath,
             context.extraWriteRoots,
@@ -46,7 +43,7 @@ object FileToolPathPolicy {
             throw IOException("工作区路径为空")
         }
 
-        val rawPath = inputPath?.trim() ?: ""
+        val rawPath = inputPath.trim()
         val root = File(homePath).canonicalFile
 
         val target = if (rawPath.isEmpty()) {

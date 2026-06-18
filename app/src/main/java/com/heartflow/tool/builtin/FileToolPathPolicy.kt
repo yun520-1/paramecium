@@ -12,18 +12,15 @@ import java.io.IOException
 object FileToolPathPolicy {
     @Throws(IOException::class)
     fun resolve(context: ToolContext, inputPath: String): File {
-        if (context == null) {
-            throw IOException("工具上下文为空")
-        }
         return resolve(context.homePath, context.extraWriteRoots, inputPath)
     }
 
     @Throws(IOException::class)
     private fun resolve(homePath: String, extraRoots: List<String>, inputPath: String): File {
-        if (homePath == null || homePath.trim().isEmpty()) {
+        if (homePath.trim().isEmpty()) {
             throw IOException("工作区路径为空")
         }
-        val rawPath = inputPath?.trim() ?: ""
+        val rawPath = inputPath.trim()
         val root = File(homePath).canonicalFile
         val target = if (rawPath.isEmpty()) {
             root
@@ -67,7 +64,7 @@ object FileToolPathPolicy {
             return null
         }
         for (rootPath in extraRoots) {
-            if (rootPath == null || rootPath.trim().isEmpty()) {
+            if (rootPath.trim().isEmpty()) {
                 continue
             }
             val root = File(rootPath.trim()).canonicalFile

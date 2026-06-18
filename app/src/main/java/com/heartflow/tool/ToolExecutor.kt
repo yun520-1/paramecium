@@ -34,11 +34,9 @@ class ToolExecutor(
      * 内部执行方法
      */
     private fun execute(toolCall: ToolCall, context: ToolContext?, confirmed: Boolean): ToolResult {
-        if (toolCall == null) {
-            return ToolResult.error("", "工具调用为空")
+        if (toolCall.getId().isEmpty()) {
+            return ToolResult.error("", "工具调用ID为空")
         }
-
-        val callContext = (context ?: ToolContext("")).withToolCallId(toolCall.getId())
         val tool = registry.get(toolCall.getName())
 
         if (tool == null) {
@@ -67,10 +65,11 @@ class ToolExecutor(
                 JSONObject(argsStr)
             }
 
+            val safeContext = context ?: return ToolResult.error(toolCall.getId(), "工具上下文不可用")
             val result = if (shouldRecordDiff(tool.getName())) {
-                executeWithDiff(tool, input, callContext)
+                executeWithDiff(tool, input, safeContext)
             } else {
-                tool.execute(input, callContext)
+                tool.execute(input, safeContext)
             }
 
             return result.withCall(toolCall.getId(), tool.getName())

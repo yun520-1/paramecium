@@ -388,7 +388,7 @@ fun TerminalScreen(onBack: () -> Unit = {}) {
             }
             Key.C -> {
                 // Ctrl+C
-                val modifiers = event.nativeKeyEvent?.modifiers ?: 0
+                val modifiers = event.nativeKeyEvent.modifiers
                 val isCtrl = (modifiers and 0x1000) != 0
                 if (isCtrl) {
                     currentProcess?.destroy()
@@ -401,7 +401,7 @@ fun TerminalScreen(onBack: () -> Unit = {}) {
                 false
             }
             Key.L -> {
-                val modifiers = event.nativeKeyEvent?.modifiers ?: 0
+                val modifiers = event.nativeKeyEvent.modifiers
                 val isCtrl = (modifiers and 0x1000) != 0
                 if (isCtrl) {
                     if (skipClearConfirm || terminalLines.size <= 3) {

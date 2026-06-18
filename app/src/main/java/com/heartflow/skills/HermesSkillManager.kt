@@ -186,9 +186,9 @@ class HermesSkillManager(private val context: Context? = null) {
                     if (skillFile.exists()) {
                         val content = skillFile.readText().take(4000)
                         val frontmatter = parseFrontmatter(content)
-                        val name = frontmatter["name"]?.toString() ?: skillDir.name
-                        val description = frontmatter["description"]?.toString() ?: ""
-                        val skillCategory = frontmatter["category"]?.toString() ?: "未分类"
+                        val name = frontmatter["name"] ?: skillDir.name
+                        val description = frontmatter["description"] ?: ""
+                        val skillCategory = frontmatter["category"] ?: "未分类"
                         if (category == null || skillCategory == category) {
                             allSkills.add(SkillInfo(name, description, skillCategory, skillDir.absolutePath))
                         }
@@ -232,7 +232,7 @@ class HermesSkillManager(private val context: Context? = null) {
                     val skillFile = File(skillDir, "SKILL.md")
                     if (skillFile.exists()) {
                         val frontmatter = parseFrontmatter(skillFile.readText().take(4000))
-                        if (frontmatter["name"]?.toString() == name) return skillDir
+                        if (frontmatter["name"] == name) return skillDir
                     }
                 }
             }

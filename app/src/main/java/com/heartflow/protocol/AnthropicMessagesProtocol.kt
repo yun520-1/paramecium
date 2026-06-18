@@ -229,12 +229,12 @@ class AnthropicMessagesProtocol : ModelProtocol {
         cancellationToken?.onCancel { call.cancel() }
 
         call.enqueue(object : Callback {
-            override fun onFailure(req: Call, e: java.io.IOException) {
+            override fun onFailure(call: Call, e: java.io.IOException) {
                 errorMessage = e.message
                 latch.countDown()
             }
 
-            override fun onResponse(req: Call, response: Response) {
+            override fun onResponse(call: Call, response: Response) {
                 try {
                     if (!response.isSuccessful) {
                         errorMessage = "Anthropic HTTP ${response.code}"

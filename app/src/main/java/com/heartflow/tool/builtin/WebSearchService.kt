@@ -210,7 +210,7 @@ class WebSearchService {
     }
 
     private fun htmlToText(html: String): String {
-        var text = html ?: ""
+        var text = html
         text = text.replace(Regex("(?is)<script[\\s\\S]*?</script>"), " ")
         text = text.replace(Regex("(?is)<style[\\s\\S]*?</style>"), " ")
         text = text.replace(Regex("(?is)<noscript[\\s\\S]*?</noscript>"), " ")

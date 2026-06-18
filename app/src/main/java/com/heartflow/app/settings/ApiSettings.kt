@@ -14,7 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -419,7 +419,7 @@ fun ApiSettings(config: ApiConfig?, onSave: (ApiConfig) -> Unit) {
                     shape = RoundedCornerShape(14.dp)
                 ) {
                     Icon(
-                        Icons.Default.Send,
+                        Icons.AutoMirrored.Filled.Send,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )

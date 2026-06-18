@@ -54,6 +54,11 @@ fun HeartFlowApp(viewModel: ChatViewModel = viewModel()) {
         }
     }
 
+    // 加载浏览器首页 URL 设置
+    LaunchedEffect(Unit) {
+        browserViewModel.homeUrl = viewModel.getBrowserHomeUrl()
+    }
+
     var showSplash by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) { delay(1500L); showSplash = false }
 
@@ -194,7 +199,7 @@ fun ChatPage(viewModel: ChatViewModel, uiState: ChatUiState) {
                             Text(uiState.personality.name, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                             Text(
                                 if (uiState.config?.apiKey?.isNotBlank() == true)
-                                    "已连接 ${uiState.config?.provider}" else "未配置API",
+                                    "已连接 ${uiState.config.provider}" else "未配置API",
                                 fontSize = 10.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
                             )
@@ -312,6 +317,8 @@ fun ChatPage(viewModel: ChatViewModel, uiState: ChatUiState) {
                 onEvolve = { viewModel.evolve() },
                 onVoiceToggle = { viewModel.updateVoiceState(it) },
                 onVoiceSend = { viewModel.sendVoiceMessage(it) },
+                onStartListening = { viewModel.startListening() },
+                onStopListening = { viewModel.stopListening() },
                 onAttachment = { text, attachment, data ->
                     viewModel.sendAttachment(text, attachment, data)
                 }

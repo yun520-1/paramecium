@@ -59,6 +59,7 @@ class WebViewEngine(private val context: Context) {
 
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false
 
+                    @Suppress("DEPRECATION")
                     override fun onReceivedError(view: WebView?, errorCode: Int, description: String?, failingUrl: String?) {
                         pageLoaded.countDown()
                     }

@@ -65,7 +65,7 @@ class AgentToolImpl : BaseTool() {
         if (prompt.isEmpty()) {
             return error("Agent prompt 不能为空。")
         }
-        if (context == null || context.agentRunner == null) {
+        if (context.agentRunner == null) {
             return error("Agent 执行器未接入，无法运行子 Agent。")
         }
         return try {

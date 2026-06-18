@@ -7,37 +7,51 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import org.mozilla.geckoview.ContentBlocking
+import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoRuntimeSettings
 import org.mozilla.geckoview.GeckoSession
+import org.mozilla.geckoview.GeckoSession.AllowOrDeny
 import org.mozilla.geckoview.GeckoSession.ContentDelegate
 import org.mozilla.geckoview.GeckoSession.NavigationDelegate
 import org.mozilla.geckoview.GeckoSession.ProgressDelegate
+import org.mozilla.geckoview.GeckoSessionSettings
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
+ * 浏览器标签页数据
+ */
+data class BrowserTab(
+    val id: Int,
+    val session: GeckoSession,
+    var url: String = "",
+    var title: String = ""
+)
+
+/**
  * GeckoView 浏览器引擎单例
  *
- * 管理 GeckoRuntime + GeckoSession 的完整生命周期。
+ * 管理 GeckoRuntime + 多 GeckoSession（多标签页）的完整生命周期。
  * 状态通过 Compose mutableStateOf 暴露，可被 Compose UI 自动观察。
  * 支持同步内容提取（供后台工具线程使用）和异步观察（供 UI 层使用）。
  *
- * 使用方式：
- *   1. [MainActivity.onCreate] 中调用 GeckoEngine.init(this)
- *   2. 工具调用 GeckoEngine.getInstance()
- *   3. UI 层直接从 engine 实例读取状态属性
- *
- * GeckoView 151 移除了 evaluateJavascript API，内容提取改用
- * [SessionPageExtractor.getPageContent]，JS 执行需走 WebExtension。
+ * 功能：
+ * - 多标签页：创建/切换/关闭标签页
+ * - 广告过滤：基于 URL 域名黑名单
+ * - 历史记录：自动记录最近访问的 URL
+ * - 下载拦截：通过 ContentDelegate.onExternalResponse
+ * - User-Agent 切换：移动端/桌面端
+ * - 混合内容支持：允许 HTTP 资源加载
  */
 class GeckoEngine private constructor(context: Context) {
 
-    // ── 运行时 ──────────────────────────────────────────
+    // ── 运行时 ──────────────────────────────────────────────
     val runtime: GeckoRuntime
-    val session: GeckoSession = GeckoSession()
+    private var nextTabId = 1
 
-    // ── Observable 状态（Compose 可自动观察）───────────
+    // ── Observable 状态（Compose 可自动观察）───────────────
     var url by mutableStateOf("")
     var pageTitle by mutableStateOf("")
     var isLoading by mutableStateOf(false)
@@ -45,6 +59,38 @@ class GeckoEngine private constructor(context: Context) {
     var canGoBack by mutableStateOf(false)
     var canGoForward by mutableStateOf(false)
     var currentContent by mutableStateOf("")
+
+    // ── 历史记录（最近访问的 URL）──────────────────────────
+    private val _history = mutableListOf<String>()
+    val history: List<String> get() = _history.toList()
+
+    // ── 标签页管理 ──────────────────────────────────────────
+    private val _tabs = mutableListOf<BrowserTab>()
+    val tabs: List<BrowserTab> get() = _tabs.toList()
+    var activeTabIndex by mutableIntStateOf(0)
+        private set
+
+    /** 当前激活的标签页 session */
+    val session: GeckoSession
+        get() {
+            if (_tabs.isEmpty()) {
+                // 罕见情况：所有标签页都被关闭，重新创建
+                createTabInternal()
+            }
+            return _tabs[activeTabIndex].session
+        }
+
+    // ── User-Agent 模式 ─────────────────────────────────────
+    var userAgentMode by mutableStateOf("mobile") // "mobile" | "desktop"
+
+    // ── 广告过滤 ────────────────────────────────────────────
+    var adBlockEnabled by mutableStateOf(true)
+
+    // ── 下载监听回调 ────────────────────────────────────────
+    var onDownloadRequested: ((url: String, mimeType: String, contentLength: Long) -> Unit)? = null
+
+    // 上下文菜单（长按链接/图片等）回调
+    var onContextMenuRequested: ((linkUri: String?, linkText: String?, srcUri: String?, elementType: String) -> Unit)? = null
 
     // 页面加载完成后待提取内容的回调池
     private var pendingContentCallback: ((String) -> Unit)? = null
@@ -54,22 +100,167 @@ class GeckoEngine private constructor(context: Context) {
     var isClosed = false
         private set
 
-    init {
-        // GeckoRuntime 设置：允许混合内容 + 调试
-        val settings = GeckoRuntimeSettings.Builder()
-            .remoteDebuggingEnabled(true)
-            .build()
-        runtime = GeckoRuntime.create(context, settings)
-        session.open(runtime)
+    // 标签页切换监听器（用于通知 UI 重新绑定 GeckoView）
+    var onActiveTabChanged: ((GeckoSession) -> Unit)? = null
 
-        // ── 内容代理：标题、预览等 ──────────────────────
+    init {
+        // 内容屏蔽设置：禁用 ETP（URL 广告过滤由 NavigationDelegate 接管），
+        // 允许所有 cookie，防止 ERR_BLOCKED_BY_ORB 等问题
+        val contentBlockingSettings = ContentBlocking.Settings.Builder()
+            .setEnhancedTrackingProtectionLevel(ContentBlocking.EtpLevel.NONE)
+            .setCookieBehavior(ContentBlocking.CookieBehavior.ACCEPT_ALL)
+            .build()
+
+        val settingsBuilder = GeckoRuntimeSettings.Builder()
+            .remoteDebuggingEnabled(true)
+            .setAllowInsecureConnections(true) // 允许不安全的连接（HTTP 混合内容），修复部分页面加载问题
+            .contentBlocking(contentBlockingSettings)
+
+        // 创建运行时
+        runtime = GeckoRuntime.create(context, settingsBuilder.build())
+
+        // 创建初始标签页
+        createTabInternal()
+    }
+
+    // ══════════════════════════════════════════════════════════
+    // 标签页管理
+    // ══════════════════════════════════════════════════════════
+
+    /** 创建新标签页，返回标签页 ID */
+    fun createTab(): Int {
+        val tab = createTabInternal()
+        return tab.id
+    }
+
+    private fun createTabInternal(): BrowserTab {
+        val id = nextTabId++
+        val newSession = GeckoSession()
+        newSession.open(runtime)
+
+        setupSessionDelegates(newSession)
+        applyUserAgentToSession(newSession)
+
+        val tab = BrowserTab(id, newSession, "", "")
+        _tabs.add(tab)
+
+        if (_tabs.size == 1) {
+            activeTabIndex = 0
+        }
+
+        return tab
+    }
+
+    /** 切换到指定索引的标签页 */
+    fun switchTab(index: Int): Boolean {
+        if (index < 0 || index >= _tabs.size || index == activeTabIndex) return false
+
+        // 保存当前标签页状态
+        _tabs[activeTabIndex] = _tabs[activeTabIndex].copy(
+            url = this.url,
+            title = pageTitle
+        )
+
+        activeTabIndex = index
+
+        // 从目标标签页同步状态
+        val target = _tabs[activeTabIndex]
+        url = target.url
+        pageTitle = target.title
+
+        // 通知 UI 重新绑定 GeckoView
+        postOnMain {
+            onActiveTabChanged?.invoke(session)
+        }
+
+        return true
+    }
+
+    /** 关闭指定索引的标签页 */
+    fun closeTab(index: Int): Boolean {
+        if (_tabs.size <= 1) return false // 至少保留一个
+        if (index < 0 || index >= _tabs.size) return false
+
+        val tab = _tabs.removeAt(index)
+        postOnMain { tab.session.close() }
+
+        // 校正 activeTabIndex
+        when {
+            index < activeTabIndex -> activeTabIndex--
+            index == activeTabIndex && activeTabIndex >= _tabs.size -> activeTabIndex = _tabs.size - 1
+        }
+
+        // 从新激活标签同步状态
+        if (_tabs.isNotEmpty()) {
+            val target = _tabs[activeTabIndex]
+            url = target.url
+            pageTitle = target.title
+        }
+
+        postOnMain {
+            onActiveTabChanged?.invoke(session)
+        }
+
+        return true
+    }
+
+    /** 关闭当前标签页 */
+    fun closeCurrentTab(): Boolean = closeTab(activeTabIndex)
+
+    // ══════════════════════════════════════════════════════════
+    // Session 代理设置
+    // ══════════════════════════════════════════════════════════
+
+    private fun setupSessionDelegates(session: GeckoSession) {
+        // ── 内容代理：标题、外部响应（下载）、上下文菜单等 ──
         session.contentDelegate = object : ContentDelegate {
             override fun onTitleChange(session: GeckoSession, title: String?) {
-                postOnMain { pageTitle = title ?: "" }
+                postOnMain {
+                    pageTitle = title ?: ""
+                    if (activeTabIndex < _tabs.size) {
+                        _tabs[activeTabIndex] = _tabs[activeTabIndex].copy(title = pageTitle)
+                    }
+                }
+            }
+
+            override fun onExternalResponse(
+                session: GeckoSession,
+                response: GeckoSession.WebResponseInfo
+            ) {
+                // 拦截文件下载（非 HTML 资源）
+                postOnMain {
+                    onDownloadRequested?.invoke(
+                        response.uri,
+                        response.contentType ?: "application/octet-stream",
+                        response.contentLength
+                    )
+                }
+            }
+
+            override fun onContextMenu(
+                session: GeckoSession,
+                screenX: Int,
+                screenY: Int,
+                element: ContentDelegate.ContextElement
+            ) {
+                // 长按链接/图片等弹出上下文菜单
+                postOnMain {
+                    onContextMenuRequested?.invoke(
+                        linkUri = element.linkUri,
+                        linkText = element.linkText,
+                        srcUri = element.srcUri,
+                        elementType = when (element.type) {
+                            ContentDelegate.ContextElement.TYPE_IMAGE -> "image"
+                            ContentDelegate.ContextElement.TYPE_VIDEO -> "video"
+                            ContentDelegate.ContextElement.TYPE_AUDIO -> "audio"
+                            else -> "link"
+                        }
+                    )
+                }
             }
         }
 
-        // ── 进度代理：页面加载状态 ──────────────────────
+        // ── 进度代理：页面加载状态 ────────────────────────
         session.progressDelegate = object : ProgressDelegate {
             override fun onPageStart(session: GeckoSession, url: String) {
                 postOnMain {
@@ -84,7 +275,15 @@ class GeckoEngine private constructor(context: Context) {
                     isLoading = false
                     progress = 100
                     if (success) {
-                        // 页面加载完成 → 通过 SessionPageExtractor 提取内容
+                        // 记录历史
+                        val currentUrl = this@GeckoEngine.url
+                        if (currentUrl.isNotBlank()) {
+                            _history.remove(currentUrl)
+                            _history.add(currentUrl)
+                            if (_history.size > 200) _history.removeAt(0)
+                        }
+
+                        // 提取页面内容
                         extractContent { content ->
                             currentContent = content
                             pendingContentCallback?.invoke(content)
@@ -99,7 +298,7 @@ class GeckoEngine private constructor(context: Context) {
             }
         }
 
-        // ── 导航代理：前进/后退能力 ────────────────────
+        // ── 导航代理：前进/后退/位置变更/广告过滤 ────────
         session.navigationDelegate = object : NavigationDelegate {
             override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
                 postOnMain { this@GeckoEngine.canGoBack = canGoBack }
@@ -115,12 +314,35 @@ class GeckoEngine private constructor(context: Context) {
                 permissions: MutableList<GeckoSession.PermissionDelegate.ContentPermission>,
                 hasUserGranted: Boolean
             ) {
-                postOnMain { this@GeckoEngine.url = url ?: "" }
+                postOnMain {
+                    this@GeckoEngine.url = url ?: ""
+                    if (activeTabIndex < _tabs.size) {
+                        _tabs[activeTabIndex] = _tabs[activeTabIndex].copy(
+                            url = this@GeckoEngine.url
+                        )
+                    }
+                }
+            }
+
+            override fun onLoadRequest(
+                session: GeckoSession,
+                request: NavigationDelegate.LoadRequest
+            ): GeckoResult<AllowOrDeny>? {
+                // 广告过滤：在请求加载前拦截已知广告域名
+                if (adBlockEnabled && request.uri != null) {
+                    val uri = request.uri
+                    if (AD_DOMAINS.any { domain -> uri.contains(domain, ignoreCase = true) }) {
+                        return GeckoResult.fromValue(AllowOrDeny.DENY)
+                    }
+                }
+                return null // null = 允许导航，由 GeckoView 自行决定
             }
         }
     }
 
-    // ── 导航方法 ────────────────────────────────────────
+    // ══════════════════════════════════════════════════════════
+    // 导航方法
+    // ══════════════════════════════════════════════════════════
 
     /** 加载指定 URL，状态自动更新 */
     fun loadUrl(url: String) {
@@ -148,7 +370,6 @@ class GeckoEngine private constructor(context: Context) {
         loadUrl(url)
         latch.await(timeoutSec, TimeUnit.SECONDS)
 
-        // 超时时用已有缓存
         if (result.isEmpty()) result = currentContent
         return result
     }
@@ -170,19 +391,67 @@ class GeckoEngine private constructor(context: Context) {
         if (url.isNotBlank()) loadUrl(url)
     }
 
-    /** 关闭浏览器会话 */
+    /** 停止加载 */
+    fun stop() {
+        postOnMain { session.stop() }
+    }
+
+    /** 关闭浏览器所有标签页 */
     fun close() {
         isClosed = true
         postOnMain {
-            session.close()
+            _tabs.forEach { it.session.close() }
+            _tabs.clear()
         }
     }
 
-    // ── 内容提取 ────────────────────────────────────────
+    /** 切换 User-Agent（移动端/桌面端），并立即应用到所有已打开的标签页 */
+    fun toggleUserAgent() {
+        userAgentMode = if (userAgentMode == "mobile") "desktop" else "mobile"
+        // 将新 UA 应用到所有已存在的 session
+        _tabs.forEach { applyUserAgentToSession(it.session) }
+    }
+
+    /** 清除历史记录 */
+    fun clearHistory() {
+        _history.clear()
+    }
 
     /**
-     * 通过 GeckoView 内置的 [PageExtractionController.SessionPageExtractor]
-     * 异步提取页面文本内容。
+     * 将当前 User-Agent 模式应用到指定 session
+     *
+     * 设置 GeckoSessionSettings 的 USER_AGENT_MODE 和 VIEWPORT_MODE，
+     * 使 Gecko 引擎使用对应的 User-Agent 字符串和视口行为。
+     */
+    private fun applyUserAgentToSession(session: GeckoSession) {
+        val settings = session.settings
+        if (userAgentMode == "desktop") {
+            settings.setInt(
+                GeckoSessionSettings.USER_AGENT_MODE,
+                GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
+            )
+            settings.setInt(
+                GeckoSessionSettings.VIEWPORT_MODE,
+                GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
+            )
+        } else {
+            settings.setInt(
+                GeckoSessionSettings.USER_AGENT_MODE,
+                GeckoSessionSettings.USER_AGENT_MODE_MOBILE
+            )
+            settings.setInt(
+                GeckoSessionSettings.VIEWPORT_MODE,
+                GeckoSessionSettings.VIEWPORT_MODE_MOBILE
+            )
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════
+    // 内容提取
+    // ══════════════════════════════════════════════════════════
+
+    /**
+     * 通过 GeckoView 内置的 [SessionPageExtractor] 异步提取页面文本内容。
      *
      * GeckoView 151 移除了 evaluateJavascript API，
      * 内容提取必须走 SessionPageExtractor。
@@ -197,21 +466,45 @@ class GeckoEngine private constructor(context: Context) {
             }
     }
 
-    // ── 内部工具 ────────────────────────────────────────
-
-    private val mainHandler = Handler(Looper.getMainLooper())
-
-    private fun postOnMain(action: () -> Unit) {
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            action()
-        } else {
-            mainHandler.post(action)
-        }
-    }
-
-    // ── 单例 ────────────────────────────────────────────
+    // ══════════════════════════════════════════════════════════
+    // 广告过滤域名列表（EasyList 精选子集）
+    // ══════════════════════════════════════════════════════════
 
     companion object {
+        /** 广告/追踪域名黑名单（EasyList 精选子集） */
+        private val AD_DOMAINS = setOf(
+            // Google 广告联盟
+            "doubleclick.net", "googlesyndication.com", "googleadservices.com",
+            "googleanalytics.com", "googletagmanager.com",
+            "pagead2.googlesyndication.com", "adservice.google.com",
+            "googleadsserving.cn",
+            // 通用广告平台
+            "ad-delivery.net", "adnxs.com", "adsrvr.org",
+            "adserver.com", "adtech.de", "advertising.com", "adzerk.net",
+            "amazon-adsystem.com", "amazonadsi.com",
+            "appnexus.com", "casalemedia.com", "contextweb.com",
+            "criteo.com", "criteo.net",
+            "exelator.com", "facebook.com/tr",
+            "imrworldwide.com", "indexww.com", "lijit.com",
+            "moatads.com", "openx.net", "pubmatic.com",
+            "quantserve.com", "rubiconproject.com", "scorecardresearch.com",
+            "servedbyadbutler.com", "sharethis.com", "smaato.net",
+            "taboola.com", "tapad.com",
+            "tribalfusion.com", "turn.com",
+            "yieldmo.com", "yieldtraffic.com", "yumenetworks.com",
+            // 中文广告/统计
+            "cnzz.com", "cnzz.mmstat.com", "growingio.com",
+            "sensorsdata.cn", "tanx.com", "umeng.com", "umtrack.com",
+            "ad.xiaomi.com", "mi.gdt.qq.com", "gdt.qq.com",
+            "pangle.io", "pangleglobal.com",
+            // 用户追踪
+            "hotjar.com", "mouseflow.com", "fullstory.com",
+            "crazyegg.com", "luckyorange.com", "clicktale.net",
+            "optimizely.com", "mixpanel.com", "segment.io",
+            "amplitude.com", "heap.io", "intercom.io",
+            "newrelic.com", "datadoghq.com"
+        )
+
         @Volatile
         private var instance: GeckoEngine? = null
         private var appContext: Context? = null
@@ -235,6 +528,18 @@ class GeckoEngine private constructor(context: Context) {
             return instance ?: synchronized(this) {
                 instance ?: GeckoEngine(ctx).also { instance = it }
             }
+        }
+    }
+
+    // ── 内部工具 ────────────────────────────────────────────
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private fun postOnMain(action: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            action()
+        } else {
+            mainHandler.post(action)
         }
     }
 }

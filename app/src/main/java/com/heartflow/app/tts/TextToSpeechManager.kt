@@ -66,6 +66,7 @@ class TextToSpeechManager(context: Context) {
                             onDoneCallback?.invoke()
                             onDoneCallback = null
                         }
+                        @Suppress("DEPRECATION")
                         override fun onError(utteranceId: String?) {
                             isSpeaking = false
                             Log.w("TTS", "朗读出错: utteranceId=$utteranceId")

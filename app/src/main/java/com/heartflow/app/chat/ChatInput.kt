@@ -1,17 +1,12 @@
 package com.heartflow.app
 
 import android.Manifest
-import android.content.Intent
-import android.os.Bundle
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
+import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -35,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.heartflow.data.*
 import java.util.*
 
@@ -50,67 +46,25 @@ fun ChatInput(
     onEvolve: () -> Unit = {},
     onVoiceToggle: ((VoiceUiState) -> VoiceUiState) -> Unit,
     onVoiceSend: (String) -> Unit,
+    onStartListening: () -> Unit = {},   // 委托给 ViewModel 启动语音识别
+    onStopListening: () -> Unit = {},    // 委托给 ViewModel 停止语音识别
     onAttachment: (String, MediaAttachment, String) -> Unit
 ) {
     var text by remember { mutableStateOf("") }
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var isFocused by remember { mutableStateOf(false) }
-    var speechRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
     val context = LocalContext.current
 
     val scheme = LocalThemeScheme.current
     val isSendEnabled = text.isNotBlank() || voiceState.isRecording
 
-    // 语音识别器清理
-    DisposableEffect(Unit) {
-        onDispose {
-            speechRecognizer?.destroy()
-            speechRecognizer = null
-        }
-    }
-
+    // 录音权限请求器 — 仅处理权限结果，不直接操作 SpeechRecognizer
     val recordPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
-            recognizer.setRecognitionListener(object : android.speech.RecognitionListener {
-                override fun onResults(results: Bundle) {
-                    val matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    if (matches != null && matches.isNotEmpty()) onVoiceSend(matches[0])
-                    recognizer.destroy()
-                    if (speechRecognizer === recognizer) speechRecognizer = null
-                    onVoiceToggle { it.copy(isRecording = false) }
-                }
-                override fun onReadyForSpeech(params: Bundle) {}
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray) {}
-                override fun onEndOfSpeech() {}
-                override fun onError(error: Int) {
-                    val msg = when (error) {
-                        SpeechRecognizer.ERROR_NO_MATCH -> "未识别到语音"
-                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "语音输入超时"
-                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "识别器忙，请重试"
-                        SpeechRecognizer.ERROR_NETWORK -> "网络错误"
-                        SpeechRecognizer.ERROR_AUDIO -> "音频错误"
-                        else -> "语音识别失败: $error"
-                    }
-                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                    recognizer.destroy()
-                    if (speechRecognizer === recognizer) speechRecognizer = null
-                    onVoiceToggle { it.copy(isRecording = false) }
-                }
-                override fun onPartialResults(partialResults: Bundle) {}
-                override fun onEvent(eventType: Int, params: Bundle) {}
-            })
-            speechRecognizer = recognizer
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            }
-            recognizer.startListening(intent)
+            onVoiceToggle { it.copy(isRecording = true, partialResult = null, voiceError = null) }
+            onStartListening()
         } else {
             Toast.makeText(context, "需要录音权限才能使用语音输入", Toast.LENGTH_SHORT).show()
             onVoiceToggle { it.copy(isRecording = false) }
@@ -215,40 +169,52 @@ fun ChatInput(
                     color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f),
                     tonalElevation = 0.dp
                 ) {
-                    Row(
-                        Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            val infiniteTransition = rememberInfiniteTransition(label = "record")
-                            val alpha by infiniteTransition.animateFloat(
-                                initialValue = 1f, targetValue = 0.2f,
-                                animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse),
-                                label = "pulse"
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .size(10.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFFEF5350).copy(alpha = alpha))
-                            )
-                            Spacer(Modifier.width(10.dp))
-                            Text(
-                                "录音中 ${voiceState.recordingDuration}s",
-                                color = MaterialTheme.colorScheme.error,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 13.sp
-                            )
-                        }
-                        IconButton(
-                            onClick = {
-                                speechRecognizer?.destroy(); speechRecognizer = null
-                                onVoiceToggle { it.copy(isRecording = false) }
-                            },
-                            modifier = Modifier.size(28.dp)
+                    Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Icon(Icons.Default.Stop, "停止", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                val infiniteTransition = rememberInfiniteTransition(label = "record")
+                                val alpha by infiniteTransition.animateFloat(
+                                    initialValue = 1f, targetValue = 0.2f,
+                                    animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse),
+                                    label = "pulse"
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFFEF5350).copy(alpha = alpha))
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    "录音中 ${voiceState.recordingDuration}s",
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    onStopListening()
+                                    onVoiceToggle { it.copy(isRecording = false, partialResult = null) }
+                                },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(Icons.Default.Stop, "停止", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                        // ── 部分识别结果（实时显示） ──
+                        if (voiceState.partialResult != null) {
+                            Text(
+                                text = voiceState.partialResult,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                fontSize = 13.sp,
+                                maxLines = 2,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
                         }
                     }
                 }
@@ -364,8 +330,15 @@ fun ChatInput(
                 if (!isProcessing && !voiceState.isRecording && text.isBlank()) {
                     Surface(
                         onClick = {
-                            onVoiceToggle { it.copy(isRecording = true, recordingDuration = 0) }
-                            recordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            // 检查录音权限
+                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+                                == PackageManager.PERMISSION_GRANTED
+                            ) {
+                                onVoiceToggle { it.copy(isRecording = true, partialResult = null, voiceError = null) }
+                                onStartListening()
+                            } else {
+                                recordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
                         },
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),

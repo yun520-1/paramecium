@@ -8,6 +8,7 @@ import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.ui.graphics.vector.ImageVector
 
@@ -37,7 +38,9 @@ enum class ScanFilterType(
     REMOVE_NOISE("removeNoise", "去噪模式", "去除照片噪点"),
     BRIGHTEN("brighten", "提亮模式", "增强暗部细节"),
     SHARPEN_TEXT("sharpenText", "文字锐化", "突出文字边缘"),
-    RECEIPT("receipt", "小票模式", "优化收据/发票");
+    RECEIPT("receipt", "小票模式", "优化收据/发票"),
+    CLAHE_ENHANCE("clahe", "CLAHE增强", "自适应直方图均衡化，大幅提升文字与背景对比度"),
+    BINARIZE("binarize", "二值化", "高对比度黑白二值化，适合纯文字文档");
 
     val icon: ImageVector
         get() = when (this) {
@@ -48,7 +51,9 @@ enum class ScanFilterType(
             REMOVE_NOISE -> Icons.Filled.AutoAwesome
             BRIGHTEN -> Icons.Filled.Brightness6
             SHARPEN_TEXT -> Icons.Filled.TextFields
-            RECEIPT -> Icons.Filled.ReceiptLong
+            RECEIPT -> Icons.AutoMirrored.Filled.ReceiptLong
+            CLAHE_ENHANCE -> Icons.Filled.AutoFixHigh
+            BINARIZE -> Icons.Filled.Contrast
         }
 
     companion object {

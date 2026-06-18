@@ -49,6 +49,8 @@ data class ChatUiMessage(
 data class VoiceUiState(
     val isRecording: Boolean = false,
     val recordingDuration: Int = 0, // seconds
+    val partialResult: String? = null,   // 语音识别部分结果（实时显示）
+    val voiceError: String? = null,      // 语音识别错误消息
     val audioFile: String? = null,
     val isPlaying: Boolean = false,
     val transcription: String? = null
@@ -118,7 +120,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     /** 发送浏览器导航命令 — 工具执行结果中可调用此方法 */
     fun sendBrowserCommand(command: BrowserCommand) {
         viewModelScope.launch {
-            _browserCommand.emit(command)
+            try {
+                _browserCommand.emit(command)
+            } catch (e: Exception) {
+                Log.e(TAG, "发送浏览器命令失败: ${e.message}")
+            }
         }
     }
 
@@ -127,6 +133,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var isLoopCancelled = false
     companion object { private const val TAG = "ChatViewModel" }
     val ttsManager = TextToSpeechManager(getApplication())
+    private var audioInputManager: AudioInputManager? = null
+    private var durationJob: Job? = null
+    private var startTimeMs: Long = 0
 
     init {
         ToolRegistry.init(application)
@@ -475,7 +484,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     break
                 }
 
-                val signal = channel.receive()
+                val signal = try {
+                    withTimeout(120_000L) { channel.receive() }
+                } catch (_: TimeoutCancellationException) {
+                    Log.w(TAG, "等待工具执行信号超时(120s)")
+                    _toolExecutionFlow.tryEmit(ToolExecutionEvent(-1, "系统", "⏱️ 等待工具执行信号超时", "error"))
+                    LoopSignal.Break("等待工具执行结果超时，已自动中止")
+                }
                 when (signal) {
                     is LoopSignal.Complete -> break
                     is LoopSignal.Break -> {
@@ -557,7 +572,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                         _toolExecutionFlow.tryEmit(ToolExecutionEvent(-1, "系统", "✅ 任务完成", "success"))
                                     }
                                 }
-                                override fun onToolCalls(calls: List<ToolCallData>) { /* 强制模式不允许工具 */ }
+                                override fun onToolCalls(calls: List<ToolCallData>) {
+                                    Log.w(TAG, "摘要循环中模型返回了${calls.size}个工具调用（不应发生），已忽略")
+                                }
                                 override fun onError(error: String) {
                                     viewModelScope.launch(Dispatchers.Main) {
                                         updateMessage(streamingIndex, "⚠️ 生成回答失败: $error")
@@ -982,6 +999,99 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         sendMessage(text)
     }
 
+    // ── 语音输入（AudioInputManager） ──────────────────────────
+
+    /**
+     * 开始语音识别 — 由 ChatInput 在获取录音权限后调用
+     */
+    fun startListening() {
+        // 如果已经在录音，不重复启动
+        if (audioInputManager != null) return
+
+        // 录音计时器（每秒更新一次录音时长）
+        startTimeMs = System.currentTimeMillis()
+        durationJob = viewModelScope.launch {
+            while (isActive) {
+                _uiState.value = _uiState.value.copy(
+                    voiceState = _uiState.value.voiceState.copy(
+                        recordingDuration = ((System.currentTimeMillis() - startTimeMs) / 1000).toInt()
+                    )
+                )
+                delay(1000)
+            }
+        }
+
+        // 初始化语音输入管理器，与应用 Application 生命周期绑定
+        audioInputManager = AudioInputManager(
+            context = getApplication(),
+            scope = viewModelScope,
+            onResult = { text ->
+                // 识别完成：清理状态并发送消息
+                durationJob?.cancel()
+                durationJob = null
+                val resultText = text.trim()
+                _uiState.value = _uiState.value.copy(
+                    voiceState = VoiceUiState() // 重置为初始状态
+                )
+                if (resultText.isNotBlank()) {
+                    sendVoiceMessage(resultText)
+                }
+            },
+            onPartialResult = { text ->
+                // 部分识别结果：实时显示在录音栏
+                _uiState.value = _uiState.value.copy(
+                    voiceState = _uiState.value.voiceState.copy(
+                        partialResult = text
+                    )
+                )
+            },
+            onError = { error ->
+                // 识别出错：停止录音并显示错误提示
+                durationJob?.cancel()
+                durationJob = null
+                _uiState.value = _uiState.value.copy(
+                    voiceState = _uiState.value.voiceState.copy(
+                        isRecording = false,
+                        partialResult = null,
+                        voiceError = error
+                    )
+                )
+            }
+        )
+        audioInputManager?.start()
+    }
+
+    /**
+     * 停止语音识别 — 由 ChatInput 用户点击停止按钮时调用
+     */
+    fun stopListening() {
+        durationJob?.cancel()
+        durationJob = null
+        audioInputManager?.stop()
+        audioInputManager = null
+        _uiState.value = _uiState.value.copy(
+            voiceState = _uiState.value.voiceState.copy(
+                isRecording = false,
+                partialResult = null
+            )
+        )
+    }
+
+    /** 获取录音时长（秒），用于 UI 显示 */
+    fun getRecordingDuration(): Int = _uiState.value.voiceState.recordingDuration
+
+    // ── 语音朗读测试 ──────────────────────────────────────────
+
+    /** 测试 TTS 语音朗读 */
+    fun testTts(text: String = "你好，我是心虫。这是我的语音朗读测试。") {
+        if (!ttsManager.isInitialized) {
+            // TTS 引擎尚未就绪，尝试初始化后朗读（由 TextToSpeechManager 自动积压）
+            ttsManager.speak(text)
+        } else {
+            ttsManager.speak(text)
+        }
+    }
+
     fun speakMessage(index: Int) {
         val messages = _uiState.value.messages
         if (index < 0 || index >= messages.size) return
@@ -1010,6 +1120,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 获取 TTS 音调（从持久化配置） */
     fun getTtsPitch(): Float = prefs.ttsPitch
+
+    /** 获取浏览器首页 URL（从持久化配置） */
+    fun getBrowserHomeUrl(): String = prefs.browserHomeUrl
+
+    /** 设置浏览器首页 URL（持久化保存） */
+    fun setBrowserHomeUrl(url: String) {
+        prefs.browserHomeUrl = url
+    }
 
     fun sendAttachment(text: String, attachment: MediaAttachment, base64Data: String) {
         val config = _uiState.value.config ?: return
@@ -1148,6 +1266,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        audioInputManager?.destroy()
+        audioInputManager = null
+        durationJob?.cancel()
+        durationJob = null
         ttsManager.shutdown()
     }
 }

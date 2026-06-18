@@ -385,13 +385,8 @@ object ToolRegistry {
     
     private fun fetchUrlPure(url: String): String {
         return try {
-            val ctx = appContext
-            if (ctx != null) {
-                val engine = WebViewEngine(ctx)
-                engine.fetchPageSync(url, timeoutMs = 15000L)
-            } else {
-                fetchUrlHttp(url)
-            }
+            val engine = WebViewEngine(appContext)
+            engine.fetchPageSync(url, timeoutMs = 15000L)
         } catch (e: Exception) {
             fetchUrlHttp(url)
         }

@@ -11,7 +11,6 @@ import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.pow
 import kotlin.math.sqrt
 
 /**
@@ -61,6 +60,25 @@ data class ScanResult(
     val processingTimeMs: Long
 )
 
+/**
+ * 直方图分析统计结果
+ *
+ * @property meanLuma 平均亮度 (0-255)
+ * @property medianLuma 中位亮度 (0-255)
+ * @property darkPercent 暗部占比（亮度 <64，百分比）
+ * @property brightPercent 亮部占比（亮度 >192，百分比）
+ * @property isDarkImage 是否偏暗
+ * @property isBrightImage 是否偏亮
+ */
+data class HistogramStats(
+    val meanLuma: Float,
+    val medianLuma: Float,
+    val darkPercent: Float,
+    val brightPercent: Float,
+    val isDarkImage: Boolean,
+    val isBrightImage: Boolean
+)
+
 class DocumentScanner {
 
     companion object {
@@ -99,6 +117,210 @@ class DocumentScanner {
         fun isOpenCvAvailable(): Boolean {
             if (!openCvChecked) initOpenCV()
             return openCvLoaded
+        }
+
+        /**
+         * 基于轮廓检测的最小矩形包围盒自动裁切 v2.0
+         *
+         * 使用 OpenCV findContours 检测最大内容区域轮廓，
+         * 用 minAreaRect 计算最小外接旋转矩形，然后裁剪出文档主体。
+         * 相比四边边界扫描法，对倾斜文档、复杂背景有更好的鲁棒性。
+         *
+         * @param bitmap 源图
+         * @param margin 保留边距（像素）
+         * @param minAreaRatio 最小区域占比阈值（低于此值返回原图）
+         * @return 裁剪后的 bitmap，若失败返回原图
+         */
+        fun contourAutoCrop(bitmap: Bitmap, margin: Int = 20, minAreaRatio: Float = 0.15f): Bitmap {
+            if (!initOpenCV()) return bitmap
+            try {
+                val w = bitmap.width; val h = bitmap.height
+                val bmp32 = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                val src = org.opencv.core.Mat()
+                Utils.bitmapToMat(bmp32, src)
+
+                val gray = org.opencv.core.Mat()
+                Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
+                Imgproc.GaussianBlur(gray, gray, org.opencv.core.Size(5.0, 5.0), 1.4)
+
+                // Canny 边缘检测
+                val edges = org.opencv.core.Mat()
+                Imgproc.Canny(gray, edges, 30.0, 100.0)
+
+                // 形态学闭操作连接断边
+                val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, org.opencv.core.Size(5.0, 5.0))
+                Imgproc.morphologyEx(edges, edges, Imgproc.MORPH_CLOSE, kernel)
+
+                // 查找轮廓
+                val contours = ArrayList<org.opencv.core.MatOfPoint>()
+                val hierarchy = org.opencv.core.Mat()
+                Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+
+                contours.sortByDescending { Imgproc.contourArea(it) }
+
+                // 释放不再需要的临时 Mat
+                src.release(); gray.release(); edges.release(); hierarchy.release()
+                bmp32.recycle()
+
+                if (contours.isEmpty()) return bitmap
+
+                val maxArea = Imgproc.contourArea(contours[0])
+                val imageArea = (w * h).toFloat()
+                if (maxArea < imageArea * minAreaRatio) return bitmap
+
+                // 用 minAreaRect 计算最小外接旋转矩形
+                val rotRect = Imgproc.minAreaRect(org.opencv.core.MatOfPoint2f(*contours[0].toArray()))
+                val boxPts = org.opencv.core.MatOfPoint2f()
+                Imgproc.boxPoints(rotRect, boxPts)
+                val corners = boxPts.toArray()
+                boxPts.release()
+
+                // 计算外接矩形范围
+                var minX = Double.MAX_VALUE; var minY = Double.MAX_VALUE
+                var maxX = Double.MIN_VALUE; var maxY = Double.MIN_VALUE
+                for (pt in corners) {
+                    if (pt.x < minX) minX = pt.x
+                    if (pt.y < minY) minY = pt.y
+                    if (pt.x > maxX) maxX = pt.x
+                    if (pt.y > maxY) maxY = pt.y
+                }
+
+                val cropLeft = (minX - margin).toInt().coerceAtLeast(0)
+                val cropTop = (minY - margin).toInt().coerceAtLeast(0)
+                val cropRight = (maxX + margin).toInt().coerceAtMost(w)
+                val cropBottom = (maxY + margin).toInt().coerceAtMost(h)
+
+                val cropW = cropRight - cropLeft
+                val cropH = cropBottom - cropTop
+
+                // 最小输出尺寸守卫
+                val minW = (w * 0.15f).toInt().coerceAtLeast(50)
+                val minH = (h * 0.15f).toInt().coerceAtLeast(50)
+                if (cropW < minW || cropH < minH) return bitmap
+
+                return Bitmap.createBitmap(bitmap, cropLeft, cropTop, cropW, cropH)
+            } catch (e: Exception) {
+                return bitmap
+            }
+        }
+
+        /**
+         * 分析图像亮度直方图
+         *
+         * 采样分析图像的亮度分布，用于指导自动曝光调整。
+         *
+         * @param bitmap 源图
+         * @return HistogramStats 包含平均亮度、暗部/亮部占比等信息
+         */
+        fun analyzeHistogram(bitmap: Bitmap): HistogramStats {
+            val w = bitmap.width; val h = bitmap.height
+            val step = maxOf(1, minOf(w, h) / 100)
+            val hist = IntArray(256)
+            var total = 0
+
+            for (y in 0 until h step step) {
+                for (x in 0 until w step step) {
+                    val p = bitmap.getPixel(x, y)
+                    val l = (0.299f * Color.red(p) + 0.587f * Color.green(p) + 0.114f * Color.blue(p)).toInt().coerceIn(0, 255)
+                    hist[l]++
+                    total++
+                }
+            }
+
+            // 平均亮度
+            var sum = 0
+            for (i in 0..255) sum += i * hist[i]
+            val meanLuma = sum.toFloat() / total.coerceAtLeast(1)
+
+            // 中位亮度
+            var cum = 0; var medianLuma = 128f
+            for (i in 0..255) {
+                cum += hist[i]
+                if (cum >= total / 2) { medianLuma = i.toFloat(); break }
+            }
+
+            // 暗部/亮部占比
+            var darkCount = 0; var brightCount = 0
+            for (i in 0..63) darkCount += hist[i]
+            for (i in 192..255) brightCount += hist[i]
+
+            val darkPercent = darkCount.toFloat() / total.coerceAtLeast(1) * 100f
+            val brightPercent = brightCount.toFloat() / total.coerceAtLeast(1) * 100f
+
+            return HistogramStats(
+                meanLuma = meanLuma,
+                medianLuma = medianLuma,
+                darkPercent = darkPercent,
+                brightPercent = brightPercent,
+                isDarkImage = meanLuma < 80f,
+                isBrightImage = meanLuma > 200f
+            )
+        }
+
+        /**
+         * 基于直方图分析的智能曝光调整
+         *
+         * 分析图像亮度直方图，自动判断暗图/亮图并应用合适的曝光补偿：
+         * - 暗图：提亮 + 增强对比度
+         * - 亮图：轻微降曝
+         * - 正常：微增强
+         *
+         * @param bitmap 源图
+         * @return 曝光调整后的 bitmap
+         */
+        fun autoAdjustExposure(bitmap: Bitmap): Bitmap {
+            val stats = analyzeHistogram(bitmap)
+
+            val brightness: Float
+            val contrast: Float
+
+            when {
+                stats.isDarkImage -> {
+                    brightness = 0.15f; contrast = 1.35f
+                }
+                stats.isBrightImage -> {
+                    brightness = -0.08f; contrast = 1.10f
+                }
+                stats.darkPercent > 30f -> {
+                    brightness = 0.08f; contrast = 1.20f
+                }
+                stats.brightPercent > 60f -> {
+                    brightness = -0.05f; contrast = 1.12f
+                }
+                else -> {
+                    brightness = 0.03f; contrast = 1.08f
+                }
+            }
+
+            if (initOpenCV()) {
+                try {
+                    val src = org.opencv.core.Mat()
+                    Utils.bitmapToMat(bitmap, src)
+                    val dest = org.opencv.core.Mat()
+                    src.convertTo(dest, -1, contrast.toDouble(), (brightness * 255.0))
+                    val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                    Utils.matToBitmap(dest, result)
+                    src.release(); dest.release()
+                    return result
+                } catch (_: Exception) {}
+            }
+
+            // 降级：纯 Kotlin 像素操作
+            val w = bitmap.width; val h = bitmap.height
+            val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+            val brightnessOffset = (brightness * 255f).toInt()
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    val p = bitmap.getPixel(x, y)
+                    fun adjust(c: Int): Int = (((c - 128) * contrast + 128).toInt() + brightnessOffset).coerceIn(0, 255)
+                    result.setPixel(x, y, Color.rgb(
+                        adjust(Color.red(p)),
+                        adjust(Color.green(p)),
+                        adjust(Color.blue(p))
+                    ))
+                }
+            }
+            return result
         }
     }
 
@@ -203,7 +425,7 @@ class DocumentScanner {
             val minX = sorted.minOf { it.x }; val maxX = sorted.maxOf { it.x }
             val minY = sorted.minOf { it.y }; val maxY = sorted.maxOf { it.y }
             val quadW = maxX - minX; val quadH = maxY - minY
-            cornersValid = quadW >= bitmap.width * 0.40f && quadH >= bitmap.height * 0.40f
+            cornersValid = quadW >= bitmap.width * 0.25f && quadH >= bitmap.height * 0.25f
             if (!cornersValid) {
                 Log.w("DocumentScanner", "角落太小 ($quadW×$quadH vs ${bitmap.width}×${bitmap.height})，跳过透视变换")
             }
@@ -218,8 +440,8 @@ class DocumentScanner {
                 // 4b. 根据文档类型应用自适应增强
                 when (docType) {
                     DocumentType.A4, DocumentType.BOOK_PAGE -> {
-                        // 文档类：灰度 + 增强对比，文字更清晰
-                        result = applyScanEffect(result, "gray")
+                        // 文档类：CLAHE增强 + 灰度，文字更清晰
+                        result = applyScanEffect(result, "clahe")
                         enhanced = true
                     }
                     DocumentType.RECEIPT -> {
@@ -521,7 +743,7 @@ class DocumentScanner {
         val dx = intArrayOf(-1, 0, 1, -1, 1, -1, 0, 1)
         val dy = intArrayOf(-1, -1, -1, 0, 0, 1, 1, 1)
         while (queue.isNotEmpty()) {
-            val (cx, cy) = queue.poll()
+            val (cx, cy) = queue.poll() ?: continue
             for (i in 0..7) {
                 val nx = cx + dx[i]; val ny = cy + dy[i]
                 if (nx in 0 until w && ny in 0 until h && edges[ny][nx] == 1) {
@@ -848,6 +1070,51 @@ class DocumentScanner {
         return perspectiveTransformFallback(bitmap, corners)
     }
 
+    /**
+     * 计算图像自适应 USM 锐化权重
+     *
+     * 基于 Sobel 梯度幅值的均值来分析图像的文字密度/纹理复杂度：
+     * - 高梯度（文字密集/边缘丰富）→ 高锐化权重 0.35-0.40
+     * - 中等梯度（普通文档）→ 中等锐化权重 0.28-0.35
+     * - 低梯度（平滑图像/照片）→ 低锐化权重 0.25-0.30
+     *
+     * @return 自适应锐化权重，范围 [0.25, 0.40]
+     */
+    private fun computeAdaptiveSharpWeightForMat(mat: org.opencv.core.Mat): Double {
+        try {
+            val gray = org.opencv.core.Mat()
+            if (mat.channels() >= 3) {
+                Imgproc.cvtColor(mat, gray, Imgproc.COLOR_BGR2GRAY)
+            } else {
+                mat.copyTo(gray)
+            }
+            // Sobel 梯度计算
+            val gradX = org.opencv.core.Mat()
+            val gradY = org.opencv.core.Mat()
+            Imgproc.Sobel(gray, gradX, org.opencv.core.CvType.CV_32F, 1, 0, 3)
+            Imgproc.Sobel(gray, gradY, org.opencv.core.CvType.CV_32F, 0, 1, 3)
+            val magnitude = org.opencv.core.Mat()
+            Core.magnitude(gradX, gradY, magnitude)
+
+            // 计算梯度均值（反映文字密度）
+            val meanVal = Core.mean(magnitude).`val`[0]
+
+            gray.release(); gradX.release(); gradY.release(); magnitude.release()
+
+            // 将梯度均值映射到锐化权重 0.25-0.40
+            // 均值 < 15（低纹理）→ 0.25
+            // 均值 15-30（中等）→ 0.25-0.35 线性插值
+            // 均值 > 30（高纹理）→ 0.35-0.40 线性插值
+            return when {
+                meanVal < 15.0 -> 0.25
+                meanVal < 30.0 -> 0.25 + (meanVal - 15.0) / 15.0 * 0.10  // 0.25-0.35
+                else -> 0.35 + ((meanVal - 30.0) / 40.0).coerceAtMost(0.05)  // 0.35-0.40
+            }
+        } catch (_: Exception) {
+            return 0.25  // 降级到保守值
+        }
+    }
+
     /** OpenCV 透视变换（双线性插值，质量更高） */
     private fun perspectiveTransformOpenCV(bitmap: Bitmap, corners: List<PointF>): Bitmap {
         val tl = corners[0]; val tr = corners[1]; val br = corners[2]; val bl = corners[3]
@@ -874,12 +1141,14 @@ class DocumentScanner {
         val dst = org.opencv.core.Mat()
         Imgproc.warpPerspective(src, dst, perspectiveMat, size, Imgproc.INTER_LINEAR)
 
-        // ── 锐化（unsharp mask）：补偿 warp 插值造成的模糊 ──
+        // ── 自适应锐化（unsharp mask）：补偿 warp 插值造成的模糊 ──
         val blurred = org.opencv.core.Mat()
         Imgproc.GaussianBlur(dst, blurred, org.opencv.core.Size(0.0, 0.0), 1.0)
         val sharpened = org.opencv.core.Mat()
-        // dst + (dst - blurred) × 0.15 → 适度锐化，避免放大压缩噪声
-        Core.addWeighted(dst, 1.0 + 0.15, blurred, -0.15, 0.0, sharpened)
+        // 基于图像文字密度自适应计算锐化权重，范围 0.25-0.40
+        val sharpWeight = computeAdaptiveSharpWeightForMat(dst)
+        // dst + (dst - blurred) × sharpWeight → 按内容密度自适应锐化
+        Core.addWeighted(dst, 1.0 + sharpWeight, blurred, -sharpWeight, 0.0, sharpened)
 
         val result = Bitmap.createBitmap(dstWidth, dstHeight, Bitmap.Config.ARGB_8888)
         Utils.matToBitmap(sharpened, result)
@@ -1033,6 +1302,9 @@ class DocumentScanner {
         return when (effect.lowercase()) {
             "gray" -> applyGrayscale(bitmap)
             "original" -> applyAutoEnhance(bitmap)
+            "clahe" -> applyCLAHE(bitmap)
+            "binary" -> applyAdaptiveBinarize(bitmap)
+            "colorclahe" -> applyColorCLAHE(bitmap)
             else -> applyColorfulScan(bitmap)
         }
     }
@@ -1091,6 +1363,83 @@ class DocumentScanner {
         val a1 = abs(tl.x * (tr.y - br.y) + tr.x * (br.y - tl.y) + br.x * (tl.y - tr.y)) / 2f
         val a2 = abs(tl.x * (bl.y - br.y) + bl.x * (br.y - tl.y) + br.x * (tl.y - bl.y)) / 2f
         return a1 + a2
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //  OpenCV CLAHE 对比度增强 + 自适应二值化
+    // ════════════════════════════════════════════════════════════════
+
+    /**
+     * OpenCV CLAHE 灰度对比度增强
+     * 自适应直方图均衡化，显著提升文档文字与背景的对比度
+     */
+    private fun applyCLAHE(bitmap: Bitmap): Bitmap {
+        if (!initOpenCV()) return applyColorfulScan(bitmap)
+        return try {
+            val src = org.opencv.core.Mat()
+            Utils.bitmapToMat(bitmap, src)
+            val gray = org.opencv.core.Mat()
+            Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGB2GRAY)
+            val clahe = Imgproc.createCLAHE(2.0, org.opencv.core.Size(8.0, 8.0))
+            val dest = org.opencv.core.Mat()
+            clahe.apply(gray, dest)
+            val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+            Utils.matToBitmap(dest, result)
+            src.release(); gray.release(); dest.release()
+            result
+        } catch (e: Exception) {
+            bitmap
+        }
+    }
+
+    /**
+     * OpenCV 自适应二值化
+     * 对灰度图做高斯自适应阈值处理，适用于文字清晰的文档
+     */
+    private fun applyAdaptiveBinarize(bitmap: Bitmap): Bitmap {
+        if (!initOpenCV()) return applyGrayscale(bitmap)
+        return try {
+            val src = org.opencv.core.Mat()
+            Utils.bitmapToMat(bitmap, src)
+            val gray = org.opencv.core.Mat()
+            Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGB2GRAY)
+            val binary = org.opencv.core.Mat()
+            Imgproc.adaptiveThreshold(gray, binary, 255.0,
+                Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C, Imgproc.THRESH_BINARY, 31, 10.0)
+            val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+            Utils.matToBitmap(binary, result)
+            src.release(); gray.release(); binary.release()
+            result
+        } catch (e: Exception) {
+            bitmap
+        }
+    }
+
+    /**
+     * OpenCV 彩色 CLAHE 增强（保留颜色信息）
+     * 将 RGB 转为 LAB，仅对 L 通道做 CLAHE，再转回 RGB
+     */
+    private fun applyColorCLAHE(bitmap: Bitmap): Bitmap {
+        if (!initOpenCV()) return applyAutoEnhance(bitmap)
+        return try {
+            val src = org.opencv.core.Mat()
+            Utils.bitmapToMat(bitmap, src)
+            val lab = org.opencv.core.Mat()
+            Imgproc.cvtColor(src, lab, Imgproc.COLOR_RGB2Lab)
+            val channels = java.util.ArrayList<org.opencv.core.Mat>()
+            Core.split(lab, channels)
+            val clahe = Imgproc.createCLAHE(2.0, org.opencv.core.Size(8.0, 8.0))
+            clahe.apply(channels[0], channels[0])
+            Core.merge(channels, lab)
+            Imgproc.cvtColor(lab, src, Imgproc.COLOR_Lab2RGB)
+            val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+            Utils.matToBitmap(src, result)
+            src.release(); lab.release()
+            channels.forEach { it.release() }
+            result
+        } catch (e: Exception) {
+            bitmap
+        }
     }
 
     private fun sortCorners(tl: PointF, tr: PointF, br: PointF, bl: PointF): List<PointF> {

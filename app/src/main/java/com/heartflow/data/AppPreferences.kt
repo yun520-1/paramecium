@@ -101,4 +101,8 @@ var systemPrompt: String
     var ttsPitch: Float
         get() = prefs.getFloat("tts_pitch", 1.0f)
         set(value) = prefs.edit().putFloat("tts_pitch", value).apply()
+
+    var browserHomeUrl: String
+        get() = prefs.getString("browser_home_url", "https://wm.m.sm.cn/?from=wm828952") ?: "https://wm.m.sm.cn/?from=wm828952"
+        set(value) = prefs.edit().putString("browser_home_url", value).apply()
 }

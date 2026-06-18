@@ -50,6 +50,8 @@ object ScanImageProcessor {
             ScanFilterType.BRIGHTEN -> brighten(src)
             ScanFilterType.SHARPEN_TEXT -> sharpen(src)
             ScanFilterType.RECEIPT -> receipt(src)
+            ScanFilterType.CLAHE_ENHANCE -> claheEnhance(src)
+            ScanFilterType.BINARIZE -> binarize(src)
         }
     } catch (e: Exception) {
         src
@@ -281,6 +283,144 @@ object ScanImageProcessor {
     private fun receipt(src: Bitmap): Bitmap {
         val base = colorControls(src, brightness = 0.1f, contrast = 1.6f, saturation = 0.0f)
         return sharpen(base, amount = 0.5f)
+    }
+
+    /**
+     * CLAHE 增强效果（纯Kotlin块状直方图均衡化）
+     * 将图像分为 8x8 块，每块独立做直方图均衡化，双线性插值消除块效应
+     */
+    private fun claheEnhance(src: Bitmap): Bitmap {
+        val w = src.width
+        val h = src.height
+        val pixels = IntArray(w * h)
+        src.getPixels(pixels, 0, w, 0, 0, w, h)
+        val out = IntArray(w * h)
+
+        val TILE_SIZE = 32
+        val tilesX = (w + TILE_SIZE - 1) / TILE_SIZE
+        val tilesY = (h + TILE_SIZE - 1) / TILE_SIZE
+
+        val tileLuts = Array(tilesY) { Array(tilesX) { IntArray(256) } }
+        for (ty in 0 until tilesY) {
+            for (tx in 0 until tilesX) {
+                val startX = tx * TILE_SIZE
+                val startY = ty * TILE_SIZE
+                val endX = minOf(startX + TILE_SIZE, w)
+                val endY = minOf(startY + TILE_SIZE, h)
+
+                val hist = IntArray(256)
+                for (y in startY until endY) {
+                    for (x in startX until endX) {
+                        val c = pixels[y * w + x]
+                        val l = (0.299f * ((c shr 16) and 0xFF) +
+                                 0.587f * ((c shr 8) and 0xFF) +
+                                 0.114f * (c and 0xFF)).toInt().coerceIn(0, 255)
+                        hist[l]++
+                    }
+                }
+
+                val cdf = IntArray(256)
+                cdf[0] = hist[0]
+                for (i in 1..255) cdf[i] = cdf[i-1] + hist[i]
+                val cdfMin = cdf.firstOrNull { it > 0 } ?: 0
+                val cdfMax = cdf.lastOrNull() ?: 0
+                for (i in 0..255) {
+                    val v = if (cdfMax != cdfMin)
+                        ((cdf[i] - cdfMin) * 255.0 / (cdfMax - cdfMin)).toInt().coerceIn(0, 255)
+                    else i
+                    tileLuts[ty][tx][i] = v
+                }
+            }
+        }
+
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val c = pixels[y * w + x]
+                val l = (0.299f * ((c shr 16) and 0xFF) +
+                         0.587f * ((c shr 8) and 0xFF) +
+                         0.114f * (c and 0xFF)).toInt().coerceIn(0, 255)
+
+                val tx = (x * tilesX) / w
+                val ty = (y * tilesY) / h
+                val txF = (x * tilesX).toFloat() / w - tx
+                val tyF = (y * tilesY).toFloat() / h - ty
+
+                fun lerp(a: Int, b: Int, t: Float): Int =
+                    ((1 - t) * a + t * b).toInt()
+
+                val v00 = tileLuts[ty.coerceAtMost(tilesY-1)][tx.coerceAtMost(tilesX-1)][l]
+                val v10 = tileLuts[ty.coerceAtMost(tilesY-1)][(tx+1).coerceAtMost(tilesX-1)][l]
+                val v01 = tileLuts[(ty+1).coerceAtMost(tilesY-1)][tx.coerceAtMost(tilesX-1)][l]
+                val v11 = tileLuts[(ty+1).coerceAtMost(tilesY-1)][(tx+1).coerceAtMost(tilesX-1)][l]
+
+                val vx0 = lerp(v00, v10, txF)
+                val vx1 = lerp(v01, v11, txF)
+                val newL = lerp(vx0, vx1, tyF).coerceIn(0, 255)
+
+                val oldR = (c shr 16) and 0xFF
+                val oldG = (c shr 8) and 0xFF
+                val oldB = c and 0xFF
+                val oldL = (0.299f * oldR + 0.587f * oldG + 0.114f * oldB).toInt().coerceIn(1, 255)
+                val scale = newL.toFloat() / oldL
+                val newR = (oldR * scale).toInt().coerceIn(0, 255)
+                val newG = (oldG * scale).toInt().coerceIn(0, 255)
+                val newB = (oldB * scale).toInt().coerceIn(0, 255)
+
+                out[y * w + x] = (0xFF shl 24) or (newR shl 16) or (newG shl 8) or newB
+            }
+        }
+
+        val result = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        result.setPixels(out, 0, w, 0, 0, w, h)
+        return result
+    }
+
+    /**
+     * 自适应二值化（纯Kotlin基于局部均值的阈值分割，积分图加速）
+     */
+    private fun binarize(src: Bitmap, blockSize: Int = 31, c: Int = 10): Bitmap {
+        val w = src.width
+        val h = src.height
+        val pixels = IntArray(w * h)
+        src.getPixels(pixels, 0, w, 0, 0, w, h)
+        val out = IntArray(w * h)
+
+        val integral = Array(h + 1) { IntArray(w + 1) }
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val px = pixels[y * w + x]
+                val l = (0.299f * ((px shr 16) and 0xFF) +
+                         0.587f * ((px shr 8) and 0xFF) +
+                         0.114f * (px and 0xFF)).toInt()
+                integral[y + 1][x + 1] = l + integral[y][x + 1] + integral[y + 1][x] - integral[y][x]
+            }
+        }
+
+        val halfBlock = blockSize / 2
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val x1 = maxOf(0, x - halfBlock)
+                val y1 = maxOf(0, y - halfBlock)
+                val x2 = minOf(w - 1, x + halfBlock)
+                val y2 = minOf(h - 1, y + halfBlock)
+                val count = (x2 - x1 + 1) * (y2 - y1 + 1)
+
+                val sum = integral[y2 + 1][x2 + 1] - integral[y1][x2 + 1] - integral[y2 + 1][x1] + integral[y1][x1]
+                val mean = sum.toDouble() / count
+
+                val px = pixels[y * w + x]
+                val l = (0.299f * ((px shr 16) and 0xFF) +
+                         0.587f * ((px shr 8) and 0xFF) +
+                         0.114f * (px and 0xFF)).toInt()
+
+                val bw = if (l <= mean - c) 0 else 255
+                out[y * w + x] = (0xFF shl 24) or (bw shl 16) or (bw shl 8) or bw
+            }
+        }
+
+        val result = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        result.setPixels(out, 0, w, 0, 0, w, h)
+        return result
     }
 
     // ── 内部工具 ──────────────────────────────────────────────────────────────

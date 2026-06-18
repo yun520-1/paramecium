@@ -1,16 +1,15 @@
 package com.heartflow.app
 
-import android.speech.tts.TextToSpeech
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.heartflow.app.LocalThemeScheme
@@ -25,7 +24,6 @@ fun MediaSettings(viewModel: ChatViewModel) {
     var ttsSpeed by remember { mutableFloatStateOf(viewModel.getTtsSpeed()) }
     var ttsPitch by remember { mutableFloatStateOf(viewModel.getTtsPitch()) }
     var savedMessage by remember { mutableStateOf("") }
-    val context = LocalContext.current
 
     LazyColumn(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
@@ -148,7 +146,7 @@ fun MediaSettings(viewModel: ChatViewModel) {
         // ── 语音朗读 ──
         item {
             SettingsSectionHeader(
-                icon = Icons.Default.VolumeUp,
+                icon = Icons.AutoMirrored.Filled.VolumeUp,
                 title = "语音朗读",
                 subtitle = "调节 AI 回复的语音朗读参数"
             )
@@ -206,28 +204,9 @@ fun MediaSettings(viewModel: ChatViewModel) {
                         )
                     }
 
-                    // 测试朗读按钮
+                    // 测试朗读按钮 — 使用 ViewModel 统一管理
                     OutlinedButton(
-                        onClick = {
-                            var testTts: TextToSpeech? = null
-                            testTts = TextToSpeech(context) { status ->
-                                val engine = testTts ?: return@TextToSpeech
-                                if (status == TextToSpeech.SUCCESS) {
-                                    engine.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
-                                        override fun onStart(id: String?) {}
-                                        override fun onDone(id: String?) { engine.shutdown() }
-                                        override fun onError(id: String?) { engine.shutdown() }
-                                        override fun onStop(id: String?, isInterrupted: Boolean) { engine.shutdown() }
-                                    })
-                                    engine.language = java.util.Locale.CHINESE
-                                    engine.setPitch(ttsPitch)
-                                    engine.setSpeechRate(ttsSpeed)
-                                    engine.speak("你好，我是心虫。这是我的语音朗读测试。", TextToSpeech.QUEUE_FLUSH, null, "tts_test")
-                                } else {
-                                    engine.shutdown()
-                                }
-                            }
-                        },
+                        onClick = { viewModel.testTts() },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))

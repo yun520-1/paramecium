@@ -123,6 +123,59 @@ fun AdvancedSettings(viewModel: ChatViewModel) {
             }
         }
 
+        // ── 浏览器设置 ──
+        item {
+            SettingsSectionHeader(
+                icon = Icons.Default.Public,
+                title = "浏览器设置",
+                subtitle = "设置内置浏览器的默认主页"
+            )
+        }
+
+        item {
+            var browserHomeUrl by remember { mutableStateOf(viewModel.getBrowserHomeUrl()) }
+            var homeUrlSaved by remember { mutableStateOf(false) }
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                tonalElevation = 0.dp,
+                color = scheme.surfaceContainerLow
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(16.dp)) {
+                    OutlinedTextField(
+                        value = browserHomeUrl,
+                        onValueChange = { browserHomeUrl = it; homeUrlSaved = false },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 2,
+                        singleLine = true,
+                        placeholder = { Text("例如: https://www.baidu.com") },
+                        leadingIcon = { Icon(Icons.Default.Home, null, modifier = Modifier.size(18.dp)) }
+                    )
+                    Button(
+                        onClick = {
+                            viewModel.setBrowserHomeUrl(browserHomeUrl)
+                            homeUrlSaved = true
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("保存主页") }
+                    if (homeUrlSaved) {
+                        Text(
+                            "✓ 已保存",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = scheme.primary,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                    Text(
+                        "修改后需要重新打开浏览器生效",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
+                }
+            }
+        }
+
         // ── 数据管理 ──
         item {
             SettingsSectionHeader(

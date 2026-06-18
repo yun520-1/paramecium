@@ -197,7 +197,8 @@ class ImageProcessor(private val context: Context) {
      * @param sensitivity 灵敏度 0.0-1.0（越大越积极裁剪，默认 0.15）
      * @return 裁剪后的 bitmap
      */
-    fun autoCrop(bitmap: Bitmap, margin: Int = 0, sensitivity: Float = 0.12f): Bitmap {
+    fun autoCrop(bitmap: Bitmap, margin: Int = 0, sensitivity: Float = 0.18f): Bitmap {
+        if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return bitmap
         val width = bitmap.width
         val height = bitmap.height
         val shortSide = minOf(width, height)

@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -111,7 +112,7 @@ fun DocumentScannerScreen(
                 title = { Text("专业文档扫描") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, "返回")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -493,6 +494,8 @@ private fun FilterItem(
                         ScanFilterType.BRIGHTEN -> Color(0xFFFFEB3B)
                         ScanFilterType.SHARPEN_TEXT -> Color(0xFF9C27B0)
                         ScanFilterType.RECEIPT -> Color(0xFFFF9800)
+                        ScanFilterType.CLAHE_ENHANCE -> Color(0xFF00BCD4)
+                        ScanFilterType.BINARIZE -> Color(0xFF607D8B)
                     }
                 ),
             contentAlignment = Alignment.Center
@@ -567,42 +570,49 @@ private fun DualPreviewPane(
     val scheme = LocalThemeScheme.current
     Row(
         modifier = Modifier
-            .fillMaxWidth(),
+            .fillMaxWidth()
+            .heightIn(min = 200.dp, max = 480.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         // 原图侧
         Card(
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).fillMaxHeight(),
             shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow)
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
                 Text(
                     if (corrected != null) "矫正前" else "原图",
                     fontSize = 12.sp, fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(4.dp)
                 )
-                Image(
-                    bitmap = original.asImageBitmap(),
-                    contentDescription = "原始图片",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(4.dp)
-                        .clip(RoundedCornerShape(4.dp)),
-                    contentScale = ContentScale.Fit
-                )
+                Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(4.dp)) {
+                    Image(
+                        bitmap = original.asImageBitmap(),
+                        contentDescription = "原始图片",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(4.dp)),
+                        contentScale = ContentScale.Fit
+                    )
+                }
             }
         }
 
         // 处理后侧
         Card(
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).fillMaxHeight(),
             shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow)
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
                 Text(
                     when {
                         processed != null -> filterName
@@ -614,21 +624,21 @@ private fun DualPreviewPane(
                     modifier = Modifier.padding(4.dp)
                 )
                 if (processed != null) {
-                    Image(
-                        bitmap = processed.asImageBitmap(),
-                        contentDescription = "处理后图片",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .padding(4.dp)
-                            .clip(RoundedCornerShape(4.dp)),
-                        contentScale = ContentScale.Fit
-                    )
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(4.dp)) {
+                        Image(
+                            bitmap = processed.asImageBitmap(),
+                            contentDescription = "处理后图片",
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(4.dp)),
+                            contentScale = ContentScale.Fit
+                        )
+                    }
                 } else if (isProcessing) {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth()
                             .weight(1f)
+                            .fillMaxWidth()
                             .padding(4.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -642,8 +652,8 @@ private fun DualPreviewPane(
                 } else {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth()
                             .weight(1f)
+                            .fillMaxWidth()
                             .padding(4.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -720,7 +730,7 @@ private suspend fun loadAndSetBitmap(
     scope.launch {
         try {
             val bitmap = withContext(Dispatchers.IO) {
-                loadBitmapSampled(context, uri, maxSize = 2048)
+                loadBitmapSampled(context, uri, maxSize = 3072)
             }
             if (bitmap != null) onLoaded(bitmap)
             else onError("无法加载图片")
@@ -796,19 +806,19 @@ private suspend fun runDocumentCorrection(
                         val straightened = scanner.deskew(warped)
 
                         // ── 第 3 步：自动裁剪空白边缘（去除变换后白边）──
-                        val cropped = ImageProcessor(context).autoCrop(straightened)
+                        val cropped = autoCropScanResult(context, straightened)
 
                         "✅ 文档边缘检测成功，已自动矫正、摆正并裁切..." to cropped
                     }
                 } else {
                     // 检测结果不可靠时，至少执行自动裁边
-                    null to ImageProcessor(context).autoCrop(bitmap)
+                    null to autoCropScanResult(context, bitmap)
                 }
             } catch (e: Exception) {
                 // 检测失败，做基础增强降级（含自动裁边）
                 null to ImageProcessor(context).let { proc ->
                     val enhanced = proc.adjustContrast(proc.adjustBrightness(bitmap, 1.1f), 1.15f)
-                    proc.autoCrop(enhanced)
+                    autoCropScanResult(context, enhanced)
                 }
             }
         }
@@ -856,10 +866,23 @@ private suspend fun runAutoScan(
         }
 
         // 最后用 autoCrop 做精细裁边
-        val finalBitmap = try {
-            ImageProcessor(context).autoCrop(result.first)
+        val croppedBitmap = try {
+            autoCropScanResult(context, result.first)
         } catch (e: Exception) {
             result.first
+        }
+
+        // 智能曝光调整：基于直方图分析自动提亮暗图或压暗过曝图
+        val finalBitmap = try {
+            DocumentScanner.autoAdjustExposure(croppedBitmap)
+        } catch (e: Exception) {
+            croppedBitmap
+        }
+
+        // 安全守卫：验证 bitmap 有效
+        if (finalBitmap.isRecycled || finalBitmap.width <= 0 || finalBitmap.height <= 0) {
+            onError("处理结果无效，请重试")
+            return
         }
 
         onSuccess(finalBitmap, result.second)
@@ -867,6 +890,20 @@ private suspend fun runAutoScan(
         onError("一键扫描失败: ${e.message}")
     } finally {
         onFinish()
+    }
+}
+
+/**
+ * 智能裁剪：优先使用 OpenCV 轮廓检测裁剪，降级到纯 Kotlin 边缘扫描裁剪
+ */
+private fun autoCropScanResult(context: Context, bitmap: Bitmap): Bitmap {
+    // 优先使用 OpenCV 轮廓检测（精度更高）
+    val contourCropped = DocumentScanner.contourAutoCrop(bitmap, margin = 20, minAreaRatio = 0.15f)
+    // 如果 OpenCV 不可用或裁剪无效，降级到纯 Kotlin 实现
+    return if (contourCropped === bitmap) {
+        ImageProcessor(context).autoCrop(bitmap)
+    } else {
+        contourCropped
     }
 }
 
@@ -886,7 +923,7 @@ private suspend fun runFilterPreview(
     try {
         val result = withContext(Dispatchers.Default) {
             val filtered = ScanImageProcessor.apply(filter, source)
-            ImageProcessor(context).autoCrop(filtered)
+            autoCropScanResult(context, filtered)
         }
         onSuccess(result)
     } catch (e: Exception) {
@@ -914,7 +951,7 @@ private suspend fun runSave(
         val path = withContext(Dispatchers.Default) {
             // 先应用滤镜
             val filtered = ScanImageProcessor.apply(filter, source)
-            val cropped = ImageProcessor(context).autoCrop(filtered)
+            val cropped = autoCropScanResult(context, filtered)
             // 保存
             saveScannedDocument(context, cropped, format, filter.raw)
         }

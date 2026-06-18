@@ -43,7 +43,6 @@ class HealthChecker(
                 ModelProtocolType.CODEX_RESPONSES -> checkCodex()
                 ModelProtocolType.LOCAL_GGUF -> checkLocalModel()
                 ModelProtocolType.OPENAI_COMPATIBLE -> checkOpenAiCompatible()
-                else -> HealthResult.Error("不支持的协议类型: ${config.protocolType}", null)
             }.also { result ->
                 val latency = System.currentTimeMillis() - startTime
                 Log.d(TAG, "健康检查完成: $result, 延迟: ${latency}ms")

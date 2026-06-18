@@ -41,7 +41,7 @@ class ImageGenerationToolImpl : BaseTool() {
         .put("required", org.json.JSONArray().put("prompt"))
 
     override fun execute(input: JSONObject, context: ToolContext): ToolResult {
-        val prompt = input?.optString("prompt")?.trim() ?: ""
+        val prompt = input.optString("prompt").trim()
         if (prompt.isEmpty()) {
             return error("图片生成提示词不能为空。")
         }

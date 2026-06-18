@@ -47,22 +47,19 @@ class TodoUpdateToolImpl : BaseTool() {
         .put("required", JSONArray().put("items"))
 
     override fun execute(input: JSONObject, context: ToolContext): ToolResult {
-        if (input == null) {
-            return error("参数不能为空。")
-        }
-        val rawArray = input.optJSONArray("items")
-        if (rawArray == null) {
+        val itemsArray = input.optJSONArray("items")
+        if (itemsArray == null) {
             return error("缺少 items 数组。")
         }
         val parsed = mutableListOf<TodoItem>()
-        for (i in 0 until rawArray.length()) {
-            val obj = rawArray.optJSONObject(i) ?: continue
+        for (i in 0 until itemsArray.length()) {
+            val obj = itemsArray.optJSONObject(i) ?: continue
             val item = TodoItem.fromJson(obj)
             if (item != null) {
                 parsed.add(item)
             }
         }
-        val store = context?.todoStateStore
+        val store = context.todoStateStore
         if (store == null) {
             return error("TODO 状态存储未初始化。")
         }

@@ -136,12 +136,12 @@ class ToolContext private constructor(
             progressListener: ProgressListener?,
             todoStateStore: TodoStateStore?
         ): ToolContext {
-            val safeHomePath = homePath ?: ""
-            val safeToolCallId = toolCallId ?: ""
+            val safeHomePath = homePath
+            val safeToolCallId = toolCallId
             return ToolContext(
                 homePath = safeHomePath,
                 extraWriteRoots = (extraWriteRoots ?: emptyList())
-                    .filter { it != null && it.trim().isNotEmpty() }
+                    .filter { it.trim().isNotEmpty() }
                     .map { it.trim() }
                     .toList(),
                 agentRunner = agentRunner,

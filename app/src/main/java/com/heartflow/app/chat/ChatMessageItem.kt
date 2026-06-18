@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -406,7 +407,7 @@ fun ChatMessageItem(
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
                                         Icon(
-                                            imageVector = if (speakingMessageIndex == index) Icons.Default.Stop else Icons.Default.VolumeUp,
+                                            imageVector = if (speakingMessageIndex == index) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
                                             contentDescription = if (speakingMessageIndex == index) "停止朗读" else "朗读",
                                             modifier = Modifier.size(16.dp),
                                             tint = if (speakingMessageIndex == index)

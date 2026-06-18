@@ -115,7 +115,7 @@ fun ImageViewer(attachment: MediaAttachment, onDismiss: () -> Unit) {
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        text = attachment.fileName ?: "未知文件",
+                        text = attachment.fileName,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         maxLines = 1,

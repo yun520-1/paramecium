@@ -31,7 +31,7 @@ data class MediaAttachment(
             mimeType = json.getString("mimeType"),
             fileName = json.getString("fileName"),
             fileSize = json.optLong("fileSize", 0),
-            base64Data = json.optString("base64Data", null)
+            base64Data = json.optString("base64Data", "").ifEmpty { null }
         )
     }
 }
