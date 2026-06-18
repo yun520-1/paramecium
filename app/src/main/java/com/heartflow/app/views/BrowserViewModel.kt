@@ -1,12 +1,11 @@
 package com.heartflow.app.views
 
-import android.webkit.WebView
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.heartflow.tool.builtin.GeckoEngine
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -29,14 +28,13 @@ sealed class BrowserCommand {
 }
 
 /**
- * 浏览器 ViewModel — 管理 WebView 的状态
+ * 浏览器 ViewModel — 管理浏览器的状态和导航
  *
  * 通过 Compose 可观察属性驱动 UI 更新。
- * WebView 本身在 BrowserScreen 的 AndroidView 中创建，
- * ViewModel 仅持有对它的引用用于导航控制。
+ * 实际渲染引擎由 [GeckoEngine] 管理（GeckoView 完整浏览器引擎），
+ * ViewModel 作为 UI 层与引擎之间的协调层。
  *
- * ⚠️ 重要：所有 WebViewClient/WebChromeClient 回调运行在 WebView 线程（非主线程），
- * 必须用 viewModelScope.launch {} 包装状态更新，防止 Compose 在非主线程重组导致卡死。
+ * 外部命令通过 [BrowserCommand] SharedFlow 传入。
  */
 class BrowserViewModel : ViewModel() {
 
@@ -51,37 +49,18 @@ class BrowserViewModel : ViewModel() {
     /** 地址栏当前显示/输入的 URL */
     var url by mutableStateOf("https://wm.m.sm.cn/?from=wm828952")
 
-    /** WebView 实际加载的 URL */
-    var currentUrl by mutableStateOf("")
-
-    /** 当前页面标题 */
-    var pageTitle by mutableStateOf("浏览器")
-
-    /** 是否正在加载页面 */
-    var isLoading by mutableStateOf(false)
-
-    /** 加载进度 0-100 */
-    var progress by mutableIntStateOf(0)
-
-    /** 能否后退 */
-    var canGoBack by mutableStateOf(false)
-
-    /** 能否前进 */
-    var canGoForward by mutableStateOf(false)
-
-    /** WebView 实例引用 — 由 BrowserScreen 在创建时赋值 */
-    var webViewRef by mutableStateOf<WebView?>(null)
-
-    /** 默认主页 URL（更友好的显示） */
+    /** 名称固定的主页 URL */
     val homeUrl = "https://wm.m.sm.cn/?from=wm828952"
 
-    /** 主页显示名称 */
-    val homeDisplayName = "wm.m.sm.cn"
+    /** GeckoView 实例引用 — 由 BrowserScreen 在创建时赋值 */
+    var geckoViewRef by mutableStateOf<org.mozilla.geckoview.GeckoView?>(null)
+
+    /** Gecko 引擎单例引用 */
+    private val engine: GeckoEngine
+        get() = GeckoEngine.getInstance()
 
     override fun onCleared() {
         super.onCleared()
-        webViewRef?.destroy()
-        webViewRef = null
     }
 
     /** 加载指定 URL，自动补全 http/https */
@@ -89,11 +68,18 @@ class BrowserViewModel : ViewModel() {
         val formattedUrl = when {
             inputUrl.startsWith("http://") || inputUrl.startsWith("https://") -> inputUrl
             inputUrl.contains(".") -> "https://$inputUrl"
-            else -> "https://wm.m.sm.cn/s?wd=$inputUrl"
+            else -> "https://www.baidu.com/s?wd=$inputUrl"
         }
         url = formattedUrl
-        currentUrl = formattedUrl
-        webViewRef?.loadUrl(formattedUrl)
+        engine.loadUrl(formattedUrl)
+        geckoViewRef?.let { gv ->
+            // 确保 GeckoView 绑定到当前 session
+            // 如果 session 未打开则重新打开
+            if (!engine.session.isOpen) {
+                engine.session.open(engine.runtime)
+            }
+            gv.setSession(engine.session)
+        }
     }
 
     /** 回到主页 */
@@ -103,17 +89,17 @@ class BrowserViewModel : ViewModel() {
 
     /** 后退 */
     fun goBack() {
-        webViewRef?.goBack()
+        engine.goBack()
     }
 
     /** 前进 */
     fun goForward() {
-        webViewRef?.goForward()
+        engine.goForward()
     }
 
     /** 刷新 */
     fun refresh() {
-        webViewRef?.reload()
+        engine.reload()
     }
 
     /**
@@ -141,34 +127,6 @@ class BrowserViewModel : ViewModel() {
                     is BrowserCommand.GoHome -> goHome()
                 }
             }
-        }
-    }
-
-    // ── WebViewClient 回调（必须主线程调度）─────────────────────────────
-
-    fun onPageStarted(view: WebView, url: String) {
-        // WebView 回调在非主线程，必须用 launch{} 调度到主线程
-        viewModelScope.launch {
-            isLoading = true
-            progress = 10
-            currentUrl = url
-            this@BrowserViewModel.url = url
-        }
-    }
-
-    fun onPageFinished(view: WebView, url: String) {
-        viewModelScope.launch {
-            isLoading = false
-            progress = 100
-            pageTitle = view.title ?: "浏览器"
-            canGoBack = view.canGoBack()
-            canGoForward = view.canGoForward()
-        }
-    }
-
-    fun onProgressChanged(progress: Int) {
-        viewModelScope.launch {
-            this@BrowserViewModel.progress = progress
         }
     }
 }

@@ -124,7 +124,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private var currentJob: Job? = null
     private val cancelledToolIndices = ConcurrentHashMap.newKeySet<Int>()
-    private var isLoopCancelled = false
+    @Volatile private var isLoopCancelled = false
     companion object { private const val TAG = "ChatViewModel" }
     val ttsManager = TextToSpeechManager(getApplication())
 
@@ -311,8 +311,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             callback = object : StreamCallback {
                                 override fun onToken(token: String) {
                                     if (isLoopCancelled) return
-                                    // ⚠️ 必须在主线程更新 Compose 状态，避免非主线程重组导致卡死
-                                    viewModelScope.launch {
+                                    viewModelScope.launch(Dispatchers.Main) {
                                         streamingText.append(token)
                                         val msgs = _uiState.value.messages.toMutableList()
                                         if (streamingIndex < msgs.size) {
@@ -331,8 +330,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 }
 
                                 override fun onComplete(fullText: String) {
-                                    // ⚠️ 必须在主线程更新 Compose 状态
-                                    viewModelScope.launch {
+                                    viewModelScope.launch(Dispatchers.Main) {
                                         updateMessage(streamingIndex, fullText)
                                         _uiState.value = _uiState.value.copy(isProcessing = false, currentEmotion = null)
                                         saveCurrentConversation()
@@ -346,22 +344,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 }
 
                                 override fun onToolCalls(calls: List<ToolCallData>) {
-                                    streamingIndex = _uiState.value.messages.lastIndex
+                                    // 在异步并行前保存 streamingText 的快照（同一线程，onToken 不会再被调用）
                                     val previousContent = streamingText.toString()
-                                    val toolCallUis = calls.map { ToolCallUiData(name = it.name, status = "running") }
-                                    // 在主线程取快照，防止非主线程突变导致的崩溃
-                                    val msgs = _uiState.value.messages.toMutableList()
-                                    msgs[streamingIndex] = ChatUiMessage(
-                                        content = previousContent,
-                                        isUser = false,
-                                        toolCalls = toolCallUis,
-                                        runningTool = calls.firstOrNull()?.name
-                                    )
                                     // 在主线程更新 Compose 状态
                                     viewModelScope.launch(Dispatchers.Main) {
+                                        streamingIndex = _uiState.value.messages.lastIndex
+                                        val toolCallUis = calls.map { ToolCallUiData(name = it.name, status = "running") }
+                                        val msgs = _uiState.value.messages.toMutableList()
+                                        msgs[streamingIndex] = ChatUiMessage(
+                                            content = previousContent,
+                                            isUser = false,
+                                            toolCalls = toolCallUis,
+                                            runningTool = calls.firstOrNull()?.name
+                                        )
                                         _uiState.value = _uiState.value.copy(messages = msgs)
+                                        streamingText.clear()
                                     }
-                                    streamingText.clear()
 
                                     // 在 agentJob（withTimeout 子作用域 Job）中执行工具
                                     val toolJob = safeAgentJob ?: Job()
@@ -370,7 +368,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                         var runningToolName: String? = calls.firstOrNull()?.name
                                         val toolResults = executeToolCalls(calls) { index, status, result, durationMs ->
                                             if (isLoopCancelled) return@executeToolCalls
-                                            // 在主线程更新 Compose 状态，防止非主线程突变导致的崩溃
+                                            // 在主线程更新 Compose 状态
                                             viewModelScope.launch(Dispatchers.Main) {
                                                 runningToolName = if (status == "running") calls.getOrNull(index)?.name
                                                     else {
@@ -400,12 +398,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                                         val assistantMsg = buildToolCallMessage(calls, previousContent)
                                         val resultMsgs = buildToolResultMessages(calls, toolResults)
-                                        // 在主线程更新 Compose 状态，防止非主线程突变导致的崩溃
+                                        // 在主线程读取最新状态（而非使用快照），防止非主线程突变导致崩溃
                                         viewModelScope.launch(Dispatchers.Main) {
-                                            msgs.add(ChatUiMessage("", isUser = false, isStreaming = true, isLoading = true))
-                                            _uiState.value = _uiState.value.copy(messages = msgs)
+                                            val currentMsgs = _uiState.value.messages.toMutableList()
+                                            currentMsgs.add(ChatUiMessage("", isUser = false, isStreaming = true, isLoading = true))
+                                            _uiState.value = _uiState.value.copy(messages = currentMsgs)
                                         }
-                                        // 累加而非替换：将之前的extraMessages也保留
+                                        // 累加而非替换
                                         val previousExtra = currentExtraMessages ?: emptyList()
                                         currentExtraMessages = previousExtra + listOf(assistantMsg) + resultMsgs
 
@@ -419,7 +418,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                         }
                                         _toolExecutionFlow.tryEmit(ToolExecutionEvent(-1, "系统", completionMessage, "success"))
 
-                                        // 收集工具结果摘要，用于循环结束后强制回答
                                         calls.zip(toolResults).forEach { (call, result) ->
                                             allToolResultsSummary.appendLine("【${call.name}】结果：${result.take(500)}")
                                         }
@@ -429,25 +427,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                     }
 
                                     // 带超时等待工具执行结果（最多60秒）
-                                    viewModelScope.launch {
+                                    viewModelScope.launch(Dispatchers.Main) {
                                         try {
                                             val toolSignal = withTimeout(60_000L) { toolJobDeferred.await() }
                                             channel.trySend(toolSignal)
-                                            // 工具执行完成后显示完成状态
                                             if (toolSignal is LoopSignal.Continue) {
                                                 _toolExecutionFlow.tryEmit(ToolExecutionEvent(-1, "系统", "✅ 任务完成", "success"))
                                             }
                                         } catch (_: TimeoutCancellationException) {
                                             toolJobDeferred.cancel()
-                                            // 超时时显示错误反馈
                                             _toolExecutionFlow.tryEmit(ToolExecutionEvent(-1, "系统", "⏱️ 工具执行超时（60秒）", "error"))
                                             channel.trySend(LoopSignal.Break("工具执行超时（60秒），已自动中止"))
                                         } catch (_: CancellationException) {
-                                            // 取消时显示错误反馈
                                             _toolExecutionFlow.tryEmit(ToolExecutionEvent(-1, "系统", "❌ 工具执行被取消", "error"))
                                             channel.trySend(LoopSignal.Break("工具执行被取消"))
                                         } catch (e: Exception) {
-                                            // 异常时显示错误反馈
                                             _toolExecutionFlow.tryEmit(ToolExecutionEvent(-1, "系统", "❌ 工具执行异常: ${e.message}", "error"))
                                             channel.trySend(LoopSignal.Break("工具执行异常: ${e.message}"))
                                         }
@@ -455,8 +449,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 }
 
                                 override fun onError(error: String) {
-                                    // ⚠️ 必须在主线程更新 Compose 状态
-                                    viewModelScope.launch {
+                                    viewModelScope.launch(Dispatchers.Main) {
                                         val msgs = _uiState.value.messages.toMutableList()
                                         if (streamingIndex < msgs.size) msgs.removeAt(streamingIndex)
                                         msgs.add(ChatUiMessage("❌ $error", isUser = false, isError = true))
@@ -541,29 +534,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 override fun onToken(token: String) {
                                     if (isLoopCancelled) return
                                     streamingText.append(token)
-                                    val m = _uiState.value.messages.toMutableList()
-                                    if (streamingIndex < m.size) {
-                                        m[streamingIndex] = ChatUiMessage(
-                                            content = streamingText.toString(), isUser = false, isStreaming = true
-                                        )
-                                        _uiState.value = _uiState.value.copy(messages = m)
+                                    val contentSnapshot = streamingText.toString()
+                                    viewModelScope.launch(Dispatchers.Main) {
+                                        val m = _uiState.value.messages.toMutableList()
+                                        if (streamingIndex < m.size) {
+                                            m[streamingIndex] = ChatUiMessage(
+                                                content = contentSnapshot, isUser = false, isStreaming = true
+                                            )
+                                            _uiState.value = _uiState.value.copy(messages = m)
+                                        }
                                     }
                                 }
 
                                 override fun onReasoningDelta(reasoning: String) {
-                                    // 深度思考内容可在这里处理
                                     Log.d("ChatViewModel", "推理内容: ${reasoning.take(100)}...")
                                 }
 
                                 override fun onComplete(fullText: String) {
-                                    updateMessage(streamingIndex, fullText)
-                                    // 将最终回答写入历史，供下次对话使用
-                                    apiHistory.add(mapOf("role" to "assistant", "content" to fullText))
-                                    _toolExecutionFlow.tryEmit(ToolExecutionEvent(-1, "系统", "✅ 任务完成", "success"))
+                                    viewModelScope.launch(Dispatchers.Main) {
+                                        updateMessage(streamingIndex, fullText)
+                                        apiHistory.add(mapOf("role" to "assistant", "content" to fullText))
+                                        _toolExecutionFlow.tryEmit(ToolExecutionEvent(-1, "系统", "✅ 任务完成", "success"))
+                                    }
                                 }
                                 override fun onToolCalls(calls: List<ToolCallData>) { /* 强制模式不允许工具 */ }
                                 override fun onError(error: String) {
-                                    updateMessage(streamingIndex, "⚠️ 生成回答失败: $error")
+                                    viewModelScope.launch(Dispatchers.Main) {
+                                        updateMessage(streamingIndex, "⚠️ 生成回答失败: $error")
+                                    }
                                 }
                             }
                         )
@@ -571,7 +569,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 } catch (_: Exception) {
                     // 超时或异常，显示工具结果摘要作为兜底
                     val fallback = allToolResultsSummary.toString().take(2000)
-                    updateMessage(streamingIndex, "📋 工具执行结果：\n$fallback")
+                    viewModelScope.launch(Dispatchers.Main) {
+                        updateMessage(streamingIndex, "📋 工具执行结果：\n$fallback")
+                    }
                 }
             }
 
@@ -728,6 +728,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun updateMessage(index: Int, content: String) {
+        // 必须在主线程调用（直接读写 MutableStateFlow.value）
         val msgs = _uiState.value.messages.toMutableList()
         if (index < msgs.size) {
             msgs[index] = ChatUiMessage(content = content, isUser = false)

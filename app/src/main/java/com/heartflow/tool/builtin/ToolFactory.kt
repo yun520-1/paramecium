@@ -17,6 +17,7 @@ object ToolFactory {
         GlobTool(),
         WebSearchToolImpl(),
         WebFetchToolImpl(),
+        BrowserTool(),        // 完整浏览器引擎（GeckoView），支持 JS 渲染
         ImageUnderstandingToolImpl(),
         // WRITE 工具
         FileWriteTool(),
@@ -81,6 +82,7 @@ object ToolFactory {
         "todo_update" -> TodoUpdateToolImpl()
         "web_search" -> WebSearchToolImpl()
         "web_fetch" -> WebFetchToolImpl()
+        "browser" -> BrowserTool()
         "shell_execute" -> ShellExecuteToolImpl()
         "image_generation" -> ImageGenerationToolImpl()
         "image_understanding" -> ImageUnderstandingToolImpl()

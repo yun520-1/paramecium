@@ -3,21 +3,22 @@ package com.heartflow.app
 import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.heartflow.data.*
+import com.heartflow.app.LocalThemeScheme
 
 @Composable
 fun AdvancedSettings(viewModel: ChatViewModel) {
+    val scheme = LocalThemeScheme.current
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     val memoryStats = viewModel.memorySystem.getStats()
@@ -32,7 +33,7 @@ fun AdvancedSettings(viewModel: ChatViewModel) {
 
     LazyColumn(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // ── 字体设置 ──
         item {
@@ -44,10 +45,19 @@ fun AdvancedSettings(viewModel: ChatViewModel) {
         }
 
         item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("A", fontSize = 10.sp, color = Color.Gray)
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                tonalElevation = 0.dp,
+                color = scheme.surfaceContainerLow
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            "A",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
                         Slider(
                             value = uiState.fontSize,
                             onValueChange = { viewModel.setFontSize(it) },
@@ -55,12 +65,16 @@ fun AdvancedSettings(viewModel: ChatViewModel) {
                             steps = 13,
                             modifier = Modifier.weight(1f)
                         )
-                        Text("A", fontSize = 18.sp, color = Color.Gray)
+                        Text(
+                            "A",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
                     }
                     Text(
                         "当前: ${"%.0f".format(uiState.fontSize)}sp",
-                        fontSize = 12.sp,
-                        color = Color.Gray
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                     )
                 }
             }
@@ -76,8 +90,13 @@ fun AdvancedSettings(viewModel: ChatViewModel) {
         }
 
         item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                tonalElevation = 0.dp,
+                color = scheme.surfaceContainerLow
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(16.dp)) {
                     OutlinedTextField(
                         value = customPrompt,
                         onValueChange = { customPrompt = it; promptSaved = false },
@@ -85,7 +104,6 @@ fun AdvancedSettings(viewModel: ChatViewModel) {
                         maxLines = 6,
                         placeholder = { Text("例如：请使用简洁的语言回答...") }
                     )
-                    Spacer(Modifier.height(12.dp))
                     Button(
                         onClick = {
                             viewModel.saveCustomPrompt(customPrompt)
@@ -94,7 +112,12 @@ fun AdvancedSettings(viewModel: ChatViewModel) {
                         modifier = Modifier.fillMaxWidth()
                     ) { Text("保存提示词") }
                     if (promptSaved) {
-                        Text("✓ 已保存", color = Color(0xFF4CAF50), fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+                        Text(
+                            "✓ 已保存",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = scheme.primary,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
                     }
                 }
             }
@@ -110,57 +133,88 @@ fun AdvancedSettings(viewModel: ChatViewModel) {
         }
 
         item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("三层记忆系统", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Spacer(Modifier.height(8.dp))
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                tonalElevation = 0.dp,
+                color = scheme.surfaceContainerLow
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(16.dp)) {
+                    // 记忆统计标题
+                    Text("三层记忆系统", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
 
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("工作记忆", fontSize = 13.sp)
-                        Text("${memoryStats.workingCount} 条", fontSize = 13.sp, color = Color.Gray)
+                    // 统计行
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        tonalElevation = 0.dp,
+                        color = scheme.glassSurface
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(12.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("工作记忆", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "${memoryStats.workingCount} 条",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                )
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("情景记忆", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "${memoryStats.episodicCount} 条",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                )
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("核心记忆", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "${memoryStats.coreCount} 条",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                )
+                            }
+                        }
                     }
-                    Divider(modifier = Modifier.padding(vertical = 4.dp))
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("情景记忆", fontSize = 13.sp)
-                        Text("${memoryStats.episodicCount} 条", fontSize = 13.sp, color = Color.Gray)
-                    }
-                    Divider(modifier = Modifier.padding(vertical = 4.dp))
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("核心记忆", fontSize = 13.sp)
-                        Text("${memoryStats.coreCount} 条", fontSize = 13.sp, color = Color.Gray)
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text("总计: ${memoryStats.totalMemories} 条记忆", fontSize = 12.sp, color = Color.Gray)
 
-                    Spacer(Modifier.height(12.dp))
-                    Divider()
-                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "总计: ${memoryStats.totalMemories} 条记忆",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
 
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                    // 操作按钮
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
                             onClick = { viewModel.clearWorkingMemory() },
                             modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF6B6B))
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            )
                         ) { Text("清除工作记忆") }
                         Button(
                             onClick = { showClearConfirm = true },
                             modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350))
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error
+                            )
                         ) { Text("清除全部记忆") }
                     }
 
-                    Spacer(Modifier.height(8.dp))
-
-                    // 逐条管理按钮
                     OutlinedButton(
                         onClick = { viewModel.setPage("memory") },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary)
+                        modifier = Modifier.fillMaxWidth()
                     ) { Text("逐条管理记忆") }
 
-                    Spacer(Modifier.height(8.dp))
-
-                    Button(
+                    // 导出按钮
+                    OutlinedButton(
                         onClick = {
                             try {
                                 val json = viewModel.exportConversations()
@@ -177,9 +231,12 @@ fun AdvancedSettings(viewModel: ChatViewModel) {
                                 ).show()
                             }
                         },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                    ) { Text("导出对话历史（JSON）") }
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Upload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("导出对话历史（JSON）")
+                    }
                 }
             }
         }
@@ -194,8 +251,17 @@ fun AdvancedSettings(viewModel: ChatViewModel) {
         }
 
         item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                tonalElevation = 0.dp,
+                color = scheme.surfaceContainerLow
+            ) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.Start
+                ) {
                     val versionName = remember {
                         try {
                             context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "未知"
@@ -203,13 +269,46 @@ fun AdvancedSettings(viewModel: ChatViewModel) {
                             "未知"
                         }
                     }
-                    Text("版本: $versionName", fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(4.dp))
-                    Text("心虫 - 一个会思考自己怎么活的 AI", fontSize = 13.sp, color = Color.Gray)
-                    Spacer(Modifier.height(4.dp))
-                    Text("三层记忆: 工作记忆 / 情景记忆 / 核心记忆", fontSize = 13.sp, color = Color.Gray)
-                    Spacer(Modifier.height(4.dp))
-                    Text("一个能感知自己存在、能判断对错、能从错误中升级的完整认知引擎。", fontSize = 13.sp, color = Color.Gray)
+
+                    // 版本号卡片
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        tonalElevation = 0.dp,
+                        color = scheme.glassSurface
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Info,
+                                contentDescription = null,
+                                tint = scheme.primary,
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("心虫", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                                Text("版本: $versionName", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                            }
+                        }
+                    }
+
+                    Text(
+                        "心虫 - 一个会思考自己怎么活的 AI",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                    Text(
+                        "三层记忆: 工作记忆 / 情景记忆 / 核心记忆",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
+                    Text(
+                        "一个能感知自己存在、能判断对错、能从错误中升级的完整认知引擎。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
                 }
             }
         }
@@ -222,17 +321,30 @@ fun AdvancedSettings(viewModel: ChatViewModel) {
     if (showClearConfirm) {
         AlertDialog(
             onDismissRequest = { showClearConfirm = false },
-            title = { Text("确认清除") },
+            icon = {
+                Icon(
+                    Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = { Text("确认清除", fontWeight = FontWeight.Bold) },
             text = { Text("确定要清除所有记忆吗？此操作不可撤销。") },
             confirmButton = {
-                TextButton(onClick = {
-                    viewModel.clearMemory()
-                    showClearConfirm = false
-                }) { Text("确认清除", color = Color(0xFFEF5350)) }
+                Button(
+                    onClick = {
+                        viewModel.clearMemory()
+                        showClearConfirm = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) { Text("确认清除") }
             },
             dismissButton = {
-                TextButton(onClick = { showClearConfirm = false }) { Text("取消") }
-            }
+                OutlinedButton(onClick = { showClearConfirm = false }) { Text("取消") }
+            },
+            shape = RoundedCornerShape(16.dp),
+            containerColor = scheme.surfaceContainerLow
         )
     }
 }

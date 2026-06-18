@@ -1,14 +1,6 @@
 package com.heartflow.app.views
 
-import android.annotation.SuppressLint
-import android.graphics.Bitmap
 import android.view.ViewGroup
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceError
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -19,48 +11,64 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.heartflow.app.LocalThemeScheme
+import com.heartflow.tool.builtin.GeckoEngine
+import org.mozilla.geckoview.GeckoView
 
 /**
- * 内置浏览器屏幕 — 完整的 WebView 浏览器体验
+ * 内置浏览器屏幕 — GeckoView 完整浏览器引擎
+ *
+ * 使用 Mozilla GeckoView 代替系统 WebView，提供更完整的网页渲染能力。
+ * 状态直接从 [GeckoEngine] 可观察属性读取。
  *
  * 布局：
  * ┌─────────────────────────────────┐
- * │  [←]  [地址栏 / URL 输入框]  [→] │  ← 顶栏
- * │  ████████████░░░░░░░░ 45%       │  ← 进度条（加载时显示）
+ * │  [🔒]  [URL 地址栏 / 输入框] [→] │  ← 顶栏
+ * │  ████████████░░░░░░░░ 45%       │  ← 进度条
  * ├─────────────────────────────────┤
  * │                                 │
- * │         WebView 内容             │  ← 主内容区
+ * │       GeckoView 内容             │  ← 主内容区
  * │                                 │
  * ├─────────────────────────────────┤
- * │  [←]  [→]  [↻]  [🏠]  [✕]     │  ← 底栏
+ * │     [←] [→] [↻] [🏠] [✕]      │  ← 底栏
  * └─────────────────────────────────┘
+ *
+ * 地址栏支持：
+ * - 自动显示当前页面 URL
+ * - 点击进入编辑模式（全选文本，方便修改）
+ * - 键盘回车或箭头按钮跳转
+ * - 页面导航时自动同步回显示模式
  */
 @OptIn(ExperimentalMaterial3Api::class)
-@SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun BrowserScreen(
     onBack: () -> Unit = {},
     viewModel: BrowserViewModel = viewModel()
 ) {
-    var urlInput by remember { mutableStateOf(viewModel.url) }
+    val scheme = LocalThemeScheme.current
+    var textFieldValue by remember { mutableStateOf(TextFieldValue(viewModel.url)) }
     var isEditing by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
 
-    // 当 ViewModel 中的 URL 变化时（如点击链接后退），同步到输入框
-    LaunchedEffect(viewModel.url) {
+    // 从 GeckoEngine 读取实时状态
+    val engine = remember { GeckoEngine.getInstance() }
+
+    // 当引擎 URL 更新且用户不在编辑状态时，同步到输入框
+    LaunchedEffect(engine.url) {
         if (!isEditing) {
-            urlInput = viewModel.url
+            textFieldValue = TextFieldValue(engine.url.ifEmpty { viewModel.url })
         }
     }
 
@@ -80,155 +88,114 @@ fun BrowserScreen(
     // ── 处理地址栏回车跳转 ──────────────────────────────────────────────
     val keyboardActions = KeyboardActions(
         onGo = {
-            viewModel.loadUrl(urlInput)
+            viewModel.loadUrl(textFieldValue.text)
             isEditing = false
             focusManager.clearFocus()
         }
     )
 
+    // ── 处理从引擎同步来的新 URL（页面加载后主动回到显示模式）──────────
+    // 当 engine.url 发生变化且不是编辑模式，清除焦点回到显示模式
+    LaunchedEffect(engine.url) {
+        if (!isEditing) {
+            focusManager.clearFocus()
+        }
+    }
+
     Scaffold(
         topBar = {
-            // ── 顶栏：独立导航按钮 + URL显示/输入 ──────────
-            TopAppBar(
+            // ── 顶栏：独立的 URL 地址栏 ───────────────────────────────────
+            CenterAlignedTopAppBar(
                 title = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        // 第一行：导航按钮
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            // 左侧导航按钮组
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                // 后退
-                                IconButton(
-                                    onClick = { viewModel.goBack() },
-                                    enabled = viewModel.canGoBack,
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.ArrowBack,
-                                        contentDescription = "后退",
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
-                                // 前进
-                                IconButton(
-                                    onClick = { viewModel.goForward() },
-                                    enabled = viewModel.canGoForward,
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.ArrowForward,
-                                        contentDescription = "前进",
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
-                                // 刷新
-                                IconButton(
-                                    onClick = {
-                                        if (viewModel.isLoading) {
-                                            viewModel.webViewRef?.stopLoading()
-                                        } else {
-                                            viewModel.refresh()
-                                        }
-                                    },
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Icon(
-                                        if (viewModel.isLoading) Icons.Default.Close else Icons.Default.Refresh,
-                                        contentDescription = if (viewModel.isLoading) "停止" else "刷新",
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
+                    OutlinedTextField(
+                        value = textFieldValue,
+                        onValueChange = { newValue ->
+                            if (!isEditing) {
+                                isEditing = true
+                                // 进入编辑模式时全选文本，方便直接覆盖输入
+                                textFieldValue = newValue.copy(
+                                    selection = TextRange(0, newValue.text.length)
+                                )
+                            } else {
+                                textFieldValue = newValue
                             }
-
-                            // 主页按钮（显示为图标+文字）
-                            FilledTonalButton(
-                                onClick = { viewModel.goHome() },
-                                modifier = Modifier.height(32.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                                shape = RoundedCornerShape(16.dp)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { focusState ->
+                                if (!focusState.isFocused) {
+                                    // 失去焦点时回到显示模式
+                                    isEditing = false
+                                    // 恢复显示当前引擎 URL
+                                    textFieldValue = TextFieldValue(
+                                        engine.url.ifEmpty { viewModel.url }
+                                    )
+                                } else if (!isEditing) {
+                                    // 获得焦点时自动进入编辑模式并全选
+                                    isEditing = true
+                                    textFieldValue = textFieldValue.copy(
+                                        selection = TextRange(0, textFieldValue.text.length)
+                                    )
+                                }
+                            },
+                        maxLines = 1,
+                        singleLine = true,
+                        placeholder = {
+                            Text(
+                                "输入网址或搜索关键词",
+                                fontSize = 13.sp,
+                                maxLines = 1
+                            )
+                        },
+                        textStyle = TextStyle(fontSize = 13.sp),
+                        // 根据链接是否加密显示不同图标
+                        leadingIcon = {
+                            Icon(
+                                if (engine.url.startsWith("https"))
+                                    Icons.Default.Lock else Icons.Default.Public,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = if (engine.url.startsWith("https"))
+                                    Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        },
+                        trailingIcon = {
+                            IconButton(
+                                onClick = {
+                                    viewModel.loadUrl(textFieldValue.text)
+                                    isEditing = false
+                                    focusManager.clearFocus()
+                                },
+                                modifier = Modifier.size(32.dp)
                             ) {
                                 Icon(
-                                    Icons.Default.Home,
-                                    contentDescription = "主页",
-                                    modifier = Modifier.size(16.dp)
+                                    Icons.Default.ArrowForward,
+                                    contentDescription = "跳转",
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.primary
                                 )
-                                Spacer(Modifier.width(4.dp))
-                                Text("主页", fontSize = 12.sp)
                             }
-                        }
-
-                        // 第二行：URL输入框
-                        OutlinedTextField(
-                            value = urlInput,
-                            onValueChange = { newUrl ->
-                                isEditing = true
-                                urlInput = newUrl
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            maxLines = 1,
-                            placeholder = {
-                                Text(
-                                    "输入网址或搜索关键词",
-                                    fontSize = 13.sp
-                                )
-                            },
-                            leadingIcon = {
-                                // 安全锁图标表示HTTPS
-                                Icon(
-                                    if (viewModel.url.startsWith("https"))
-                                        Icons.Default.Lock else Icons.Default.Public,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = if (viewModel.url.startsWith("https"))
-                                        Color(0xFF4CAF50) else Color.Gray
-                                )
-                            },
-                            trailingIcon = {
-                                if (isEditing) {
-                                    IconButton(
-                                        onClick = {
-                                            viewModel.loadUrl(urlInput)
-                                            isEditing = false
-                                            focusManager.clearFocus()
-                                        },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.ArrowForward,
-                                            contentDescription = "跳转",
-                                            modifier = Modifier.size(18.dp),
-                                            tint = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-                                }
-                            },
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Uri,
-                                imeAction = ImeAction.Go
-                            ),
-                            keyboardActions = keyboardActions,
-                            shape = RoundedCornerShape(20.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                                focusedBorderColor = MaterialTheme.colorScheme.primary
-                            ),
-                            singleLine = true,
-                            textStyle = TextStyle(fontSize = 13.sp)
+                        },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                        keyboardActions = keyboardActions,
+                        shape = RoundedCornerShape(20.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = scheme.surfaceContainerLow,
+                            unfocusedContainerColor = scheme.surfaceContainerLow,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                            focusedBorderColor = MaterialTheme.colorScheme.primary
                         )
-                    }
+                    )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor = scheme.glassSurface
                 )
             )
         },
         bottomBar = {
             // ── 底栏：后退 / 前进 / 刷新 / 主页 / 关闭 ──
             NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                containerColor = scheme.glassSurface,
                 tonalElevation = 0.dp
             ) {
                 // 后退
@@ -237,14 +204,14 @@ fun BrowserScreen(
                         Icon(
                             Icons.Default.ArrowBack,
                             "后退",
-                            tint = if (viewModel.canGoBack) MaterialTheme.colorScheme.onSurface
+                            tint = if (engine.canGoBack) MaterialTheme.colorScheme.onSurface
                                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
                         )
                     },
                     label = { Text("后退", fontSize = 10.sp) },
                     selected = false,
                     onClick = { viewModel.goBack() },
-                    enabled = viewModel.canGoBack
+                    enabled = engine.canGoBack
                 )
                 // 前进
                 NavigationBarItem(
@@ -252,28 +219,28 @@ fun BrowserScreen(
                         Icon(
                             Icons.Default.ArrowForward,
                             "前进",
-                            tint = if (viewModel.canGoForward) MaterialTheme.colorScheme.onSurface
+                            tint = if (engine.canGoForward) MaterialTheme.colorScheme.onSurface
                                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
                         )
                     },
                     label = { Text("前进", fontSize = 10.sp) },
                     selected = false,
                     onClick = { viewModel.goForward() },
-                    enabled = viewModel.canGoForward
+                    enabled = engine.canGoForward
                 )
-                // 刷新
+                // 刷新/停止
                 NavigationBarItem(
                     icon = {
                         Icon(
-                            if (viewModel.isLoading) Icons.Default.Close else Icons.Default.Refresh,
-                            if (viewModel.isLoading) "停止" else "刷新"
+                            if (engine.isLoading) Icons.Default.Close else Icons.Default.Refresh,
+                            if (engine.isLoading) "停止" else "刷新"
                         )
                     },
-                    label = { Text(if (viewModel.isLoading) "停止" else "刷新", fontSize = 10.sp) },
+                    label = { Text(if (engine.isLoading) "停止" else "刷新", fontSize = 10.sp) },
                     selected = false,
                     onClick = {
-                        if (viewModel.isLoading) {
-                            viewModel.webViewRef?.stopLoading()
+                        if (engine.isLoading) {
+                            engine.session.stop()
                         } else {
                             viewModel.refresh()
                         }
@@ -302,21 +269,21 @@ fun BrowserScreen(
                 .padding(padding)
         ) {
             // ── 加载进度条 ──────────────────────────────
-            if (viewModel.isLoading) {
+            if (engine.isLoading) {
                 LinearProgressIndicator(
-                    progress = { viewModel.progress / 100f },
+                    progress = { engine.progress / 100f },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(3.dp),
                     color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    trackColor = scheme.surfaceContainerHighest
                 )
             }
 
             // ── 页面标题（仅加载完成后显示） ────────────
-            if (!viewModel.isLoading && viewModel.pageTitle.isNotBlank()) {
+            if (!engine.isLoading && engine.pageTitle.isNotBlank()) {
                 Text(
-                    text = viewModel.pageTitle,
+                    text = engine.pageTitle,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 2.dp),
@@ -327,58 +294,33 @@ fun BrowserScreen(
                 )
             }
 
-            // ── WebView 主内容 ──────────────────────────
+            // ── GeckoView 主内容 ──────────────────────────
             AndroidView(
                 factory = { context ->
-                    WebView(context).apply {
+                    // 获取 GeckoEngine 实例
+                    val engine = GeckoEngine.getInstance()
+
+                    // 创建 GeckoView
+                    val geckoView = GeckoView(context).apply {
                         layoutParams = ViewGroup.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT
                         )
 
-                        settings.apply {
-                            javaScriptEnabled = true
-                            domStorageEnabled = true
-                            loadWithOverviewMode = true
-                            useWideViewPort = true
-                            builtInZoomControls = true
-                            displayZoomControls = false
-                            setSupportZoom(true)
-                            allowFileAccess = false
-                            allowContentAccess = false
-                            mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                            cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-                            userAgentString = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 " +
-                                "(KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+                        // 设置 session（如果 session 未打开则重新打开）
+                        if (!engine.session.isOpen) {
+                            engine.session.open(engine.runtime)
                         }
-
-                        setBackgroundColor(android.graphics.Color.TRANSPARENT)
-
-                        webViewClient = object : WebViewClient() {
-                            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                                url?.let { viewModel.onPageStarted(view!!, it) }
-                            }
-
-                            override fun onPageFinished(view: WebView?, url: String?) {
-                                url?.let { viewModel.onPageFinished(view!!, it) }
-                            }
-                        }
-
-                        webChromeClient = object : WebChromeClient() {
-                            override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                                viewModel.onProgressChanged(newProgress)
-                            }
-
-                            override fun onReceivedTitle(view: WebView?, title: String?) {
-                                // ⚠️ WebChromeClient 回调在非主线程，禁止直接赋值 ViewModel 状态
-                                // 由 onPageFinished 统一处理状态更新
-                            }
-                        }
-
-                        // 加载初始 URL
-                        loadUrl(viewModel.url)
-                        viewModel.webViewRef = this
+                        setSession(engine.session)
                     }
+
+                    // 保存引用供 ViewModel 使用
+                    viewModel.geckoViewRef = geckoView
+
+                    // 加载初始 URL
+                    engine.loadUrl(viewModel.url)
+
+                    geckoView
                 },
                 modifier = Modifier.fillMaxSize()
             )

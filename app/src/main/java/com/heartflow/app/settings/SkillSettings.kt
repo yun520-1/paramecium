@@ -1,21 +1,24 @@
 package com.heartflow.app
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.heartflow.data.*
+import com.heartflow.app.LocalThemeScheme
 import kotlinx.coroutines.launch
 
 @Composable
 fun SkillSettings(viewModel: ChatViewModel) {
+    val scheme = LocalThemeScheme.current
     var installedSkills by remember { mutableStateOf(listOf<String>()) }
     var isLoading by remember { mutableStateOf(false) }
     var isInstalling by remember { mutableStateOf(false) }
@@ -40,7 +43,7 @@ fun SkillSettings(viewModel: ChatViewModel) {
 
     LazyColumn(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // ── 安装新技能 ──
         item {
@@ -52,8 +55,13 @@ fun SkillSettings(viewModel: ChatViewModel) {
         }
 
         item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                tonalElevation = 0.dp,
+                color = scheme.surfaceContainerLow
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(16.dp)) {
                     OutlinedTextField(
                         value = installUrl,
                         onValueChange = { installUrl = it },
@@ -62,7 +70,6 @@ fun SkillSettings(viewModel: ChatViewModel) {
                         singleLine = true,
                         enabled = !isInstalling
                     )
-                    Spacer(Modifier.height(12.dp))
                     Button(
                         onClick = {
                             if (installUrl.isNotBlank() && !isInstalling) {
@@ -100,28 +107,59 @@ fun SkillSettings(viewModel: ChatViewModel) {
         }
 
         item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                tonalElevation = 0.dp,
+                color = scheme.surfaceContainerLow
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(16.dp)) {
                     if (isLoading) {
-                        Text("加载中...", fontSize = 13.sp, color = Color.Gray)
+                        Text(
+                            "加载中...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
                     } else if (installedSkills.isEmpty()) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Info, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(20.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("暂未安装任何技能", fontSize = 13.sp, color = Color.Gray)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(
+                                Icons.Default.Info,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                "暂未安装任何技能",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
                         }
                     } else {
                         installedSkills.forEachIndexed { index, skill ->
                             Row(
                                 Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("📦", fontSize = 18.sp)
-                                Spacer(Modifier.width(8.dp))
-                                Text(skill, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                                Text("📦", style = MaterialTheme.typography.bodyLarge)
+                                Text(skill, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                                OutlinedButton(
+                                    onClick = {
+                                        installedSkills = installedSkills - skill
+                                    },
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                ) {
+                                    Text("移除", style = MaterialTheme.typography.bodySmall)
+                                }
                             }
                             if (index < installedSkills.size - 1) {
-                                Divider(modifier = Modifier.padding(vertical = 2.dp))
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(vertical = 2.dp),
+                                    color = MaterialTheme.colorScheme.outlineVariant
+                                )
                             }
                         }
                     }
@@ -139,8 +177,13 @@ fun SkillSettings(viewModel: ChatViewModel) {
         }
 
         item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                tonalElevation = 0.dp,
+                color = scheme.surfaceContainerLow
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(16.dp)) {
                     val tools = listOf(
                         "calculator - 数学计算",
                         "search_web - 搜索网页信息",
@@ -165,19 +208,19 @@ fun SkillSettings(viewModel: ChatViewModel) {
                     )
                     tools.forEach { tool ->
                         Row(
-                            Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text("🔧", fontSize = 14.sp)
-                            Spacer(Modifier.width(8.dp))
-                            Text(tool, fontSize = 13.sp)
+                            Text("🔧", style = MaterialTheme.typography.bodyMedium)
+                            Text(tool, style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(4.dp))
                     Text(
                         "这些工具在对话中会根据需要自动调用，无需手动安装。",
-                        fontSize = 11.sp,
-                        color = Color.Gray
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                     )
                 }
             }
@@ -186,17 +229,31 @@ fun SkillSettings(viewModel: ChatViewModel) {
         // 状态消息
         if (message.isNotBlank()) {
             item {
-                Card(
+                val msgBackground = when {
+                    message.startsWith("✅") -> scheme.primaryContainer
+                    message.startsWith("❌") -> scheme.error.copy(alpha = 0.15f)
+                    else -> scheme.tertiary.copy(alpha = 0.12f)
+                }
+                val animatedBg by animateColorAsState(
+                    targetValue = msgBackground,
+                    label = "msgBg"
+                )
+                Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (message.startsWith("✅")) Color(0xFFE8F5E9)
-                        else if (message.startsWith("❌")) Color(0xFFFFEBEE)
-                        else Color(0xFFE3F2FD)
-                    )
+                    shape = RoundedCornerShape(16.dp),
+                    tonalElevation = 0.dp,
+                    color = animatedBg
                 ) {
-                    Text(message, modifier = Modifier.padding(16.dp), fontSize = 13.sp)
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(16.dp)
+                    )
                 }
             }
         }
+
+        // 底部间距
+        item { Spacer(Modifier.height(8.dp)) }
     }
 }

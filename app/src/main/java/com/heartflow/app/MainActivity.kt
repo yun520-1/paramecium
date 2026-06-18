@@ -11,11 +11,14 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.platform.LocalContext
+import com.heartflow.tool.builtin.GeckoEngine
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // 初始化 GeckoView 浏览器引擎（首次使用时懒加载）
+        GeckoEngine.init(this)
         setContent {
             HeartFlowApp()
         }

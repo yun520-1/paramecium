@@ -197,12 +197,17 @@ class ImageProcessor(private val context: Context) {
      * @param sensitivity 灵敏度 0.0-1.0（越大越积极裁剪，默认 0.15）
      * @return 裁剪后的 bitmap
      */
-    fun autoCrop(bitmap: Bitmap, margin: Int = 8, sensitivity: Float = 0.15f): Bitmap {
+    fun autoCrop(bitmap: Bitmap, margin: Int = 0, sensitivity: Float = 0.12f): Bitmap {
         val width = bitmap.width
         val height = bitmap.height
+        val shortSide = minOf(width, height)
+
+        // 自动计算边距：短边的 2%，至少 20px（margin=0 时启用）
+        val userMargin = if (margin > 0) margin else maxOf(20, shortSide / 50)
+        val MIN_OUTPUT_RATIO = 0.60f  // 最小输出尺寸守卫
 
         // 计算采样步长（大图加速）
-        val step = maxOf(1, minOf(width, height) / 200)
+        val step = maxOf(1, shortSide / 200)
 
         // 1. 计算全图的亮度直方图，确定动态阈值
         val hist = IntArray(256)
@@ -224,24 +229,24 @@ class ImageProcessor(private val context: Context) {
         }
 
         // 动态阈值：中位亮度越亮，阈值越高
-        // 中位亮度 200+ → 阈值 ~235（明亮背景）
-        // 中位亮度 128  → 阈值 ~190（普通背景）
-        // 中位亮度 64   → 阈值 ~150（偏暗背景）
         val threshold = minOf(245, maxOf(140, medianLuma + 60))
 
-        // 判定像素是否为"空白"（基于动态阈值）
+        // 判定像素是否为"空白"（基于动态阈值 + RGB 方差）
         fun isBlank(pixel: Int): Boolean {
             val r = Color.red(pixel)
             val g = Color.green(pixel)
             val b = Color.blue(pixel)
-            // 非白色像素 → 一定不是空白（暗色内容）
-            if (r < threshold * 0.7f || g < threshold * 0.7f || b < threshold * 0.7f) return false
-            // 接近阈值 → 看方差是否小（纯色背景 vs 有细节的内容）
+
+            // 任一通道明显暗于阈值 → 非空白（内容/阴影）
+            if (r < threshold * 0.65f || g < threshold * 0.65f || b < threshold * 0.65f) return false
+
+            // RGB 方差（max-min）≤ 30 视为纯色/背景区域
             val minC = minOf(r, g, b)
             val maxC = maxOf(r, g, b)
-            val range = maxC - minC
-            return range <= 25   // 颜色变化小的区域视为背景空白
+            return (maxC - minC) <= 30
         }
+
+        // 2. 从四边扫描空白边界
 
         // 从上往下扫描
         var top = 0
@@ -252,7 +257,6 @@ class ImageProcessor(private val context: Context) {
                 totalCheck++
                 if (isBlank(bitmap.getPixel(x, top))) blankPixels++
             }
-            // 整行空白占比 > (1 - sensitivity) 才视为空白行
             if (blankPixels.toFloat() / totalCheck <= (1f - sensitivity)) break@top
             top++
         }
@@ -296,17 +300,36 @@ class ImageProcessor(private val context: Context) {
             right--
         }
 
-        // 如果全部空白，返回原图
+        // 3. 如果全部空白，返回原图
         if (top >= bottom || left >= right) return bitmap
 
-        // 添加边距
-        val croppedLeft = (left - margin).coerceAtLeast(0)
-        val croppedTop = (top - margin).coerceAtLeast(0)
-        val croppedRight = (right + margin).coerceAtMost(width - 1)
-        val croppedBottom = (bottom + margin).coerceAtMost(height - 1)
+        // 4. 添加边距（不超过该侧检测到的空白距离，避免溢出）
+        val marginTop = minOf(userMargin, top)
+        val marginBottom = minOf(userMargin, height - 1 - bottom)
+        val marginLeft = minOf(userMargin, left)
+        val marginRight = minOf(userMargin, width - 1 - right)
 
-        val cropWidth = croppedRight - croppedLeft + 1
-        val cropHeight = croppedBottom - croppedTop + 1
+        val croppedLeft = (left - marginLeft).coerceAtLeast(0)
+        val croppedTop = (top - marginTop).coerceAtLeast(0)
+        val croppedRight = (right + marginRight).coerceAtMost(width - 1)
+        val croppedBottom = (bottom + marginBottom).coerceAtMost(height - 1)
+
+        var cropWidth = croppedRight - croppedLeft + 1
+        var cropHeight = croppedBottom - croppedTop + 1
+
+        // 5. 最小输出尺寸守卫：如果裁剪后任一维度 ≤ 输入 × MIN_OUTPUT_RATIO，保守扩边
+        val minW = (width * MIN_OUTPUT_RATIO).toInt()
+        val minH = (height * MIN_OUTPUT_RATIO).toInt()
+        if (cropWidth < minW || cropHeight < minH) {
+            // 用 userMargin × 2 做保守边界，取检测结果和保守边界的并集
+            val fallbackL = minOf(croppedLeft, userMargin * 2)
+            val fallbackT = minOf(croppedTop, userMargin * 2)
+            val fallbackR = maxOf(croppedRight, width - userMargin * 2)
+            val fallbackB = maxOf(croppedBottom, height - userMargin * 2)
+            cropWidth = fallbackR - fallbackL + 1
+            cropHeight = fallbackB - fallbackT + 1
+            return Bitmap.createBitmap(bitmap, fallbackL, fallbackT, cropWidth, cropHeight)
+        }
 
         return Bitmap.createBitmap(bitmap, croppedLeft, croppedTop, cropWidth, cropHeight)
     }

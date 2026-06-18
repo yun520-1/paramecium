@@ -31,9 +31,10 @@ class DocumentScanner {
     companion object {
         private const val CANNY_LOW = 30.0     // Canny 低阈值
         private const val CANNY_HIGH = 100.0   // Canny 高阈值
-        private const val MIN_AREA_RATIO = 0.05f
-        private const val DP_EPSILON_RATIO = 0.018f  // Douglas-Peucker epsilon 相对值
-        private const val MORPH_KERNEL = 5
+        private const val MIN_AREA_RATIO = 0.06f   // v3.3: 0.08→0.06 放宽最小面积门槛，允许检测更多中小尺寸文档
+        private const val MIN_SIDE_RATIO = 0.12f   // v3.2 新增：外接框短边至少占原图 12%
+        private const val DP_EPSILON_RATIO = 0.015f  // Douglas-Peucker epsilon 相对值（v3.1 从 0.018→0.015 更精确拟合）
+        private const val MORPH_KERNEL = 7            // v3.2: 5→7 更大的形态学核，更好地连接边缘
 
         private var openCvLoaded = false
         private var openCvChecked = false
@@ -127,17 +128,27 @@ class DocumentScanner {
             // 3. 高斯模糊（降噪）
             Imgproc.GaussianBlur(gray, gray, org.opencv.core.Size(5.0, 5.0), 1.4)
 
-            // 4. Canny 边缘检测（Otsu 自适应阈值）
+            // 4. Canny 边缘检测（基于 Sobel 梯度 + Otsu 自适应阈值）
             val edges = org.opencv.core.Mat()
-            // 用均值计算自适应阈值
-            val meanVal = Core.mean(gray).`val`[0]
-            val highThresh = minOf(meanVal * 0.35, 150.0).coerceAtLeast(30.0)
-            val lowThresh = (highThresh * 0.25).coerceAtLeast(10.0)
+            // 计算 Sobel 梯度幅值，用 Otsu 自动确定高低阈值（适应不同光照/对比度）
+            val sobelX = org.opencv.core.Mat()
+            val sobelY = org.opencv.core.Mat()
+            val sobelMag = org.opencv.core.Mat()
+            Imgproc.Sobel(gray, sobelX, org.opencv.core.CvType.CV_32F, 1, 0)
+            Imgproc.Sobel(gray, sobelY, org.opencv.core.CvType.CV_32F, 0, 1)
+            Core.magnitude(sobelX, sobelY, sobelMag)
+            val mag8u = org.opencv.core.Mat()
+            sobelMag.convertTo(mag8u, org.opencv.core.CvType.CV_8U)
+            val otsuThresh = Imgproc.threshold(mag8u, org.opencv.core.Mat(), 0.0, 255.0, Imgproc.THRESH_OTSU or Imgproc.THRESH_BINARY)
+            val highThresh = maxOf(otsuThresh * 0.5, 30.0)
+            val lowThresh = maxOf(highThresh * 0.25, 10.0)
             Imgproc.Canny(gray, edges, lowThresh, highThresh)
+            sobelX.release(); sobelY.release(); sobelMag.release(); mag8u.release()
 
-            // 5. 形态学闭操作连接断边
+            // 5. 形态学闭操作连接断边（核大小按图尺寸自适应）
+            val adaptiveKernel = ((MORPH_KERNEL * minOf(w, h) / 600f).toInt().coerceIn(3, 11) or 1)  // 取奇数
             val kernel = Imgproc.getStructuringElement(
-                Imgproc.MORPH_RECT, org.opencv.core.Size(MORPH_KERNEL.toDouble(), MORPH_KERNEL.toDouble())
+                Imgproc.MORPH_RECT, org.opencv.core.Size(adaptiveKernel.toDouble(), adaptiveKernel.toDouble())
             )
             Imgproc.morphologyEx(edges, edges, Imgproc.MORPH_CLOSE, kernel)
 
@@ -175,11 +186,21 @@ class DocumentScanner {
                     }
                     val sorted = sortCorners(points[0], points[1], points[2], points[3])
                     val qArea = computeQuadArea(sorted[0], sorted[1], sorted[2], sorted[3])
-                    // 确保面积合理且方向正确
-                    if (qArea >= imageArea * MIN_AREA_RATIO * 0.5f) {
-                        src.release(); gray.release(); edges.release(); hierarchy.release()
-                        bmp32.recycle()
-                        return sorted
+
+                    // 面积校验
+                    if (qArea >= imageArea * MIN_AREA_RATIO) {
+                        // 外接框边长校验：防止细长/极小区域
+                        val minX = sorted.minOf { it.x }
+                        val maxX = sorted.maxOf { it.x }
+                        val minY = sorted.minOf { it.y }
+                        val maxY = sorted.maxOf { it.y }
+                        val quadW = maxX - minX
+                        val quadH = maxY - minY
+                        if (quadW >= w * MIN_SIDE_RATIO && quadH >= h * MIN_SIDE_RATIO) {
+                            src.release(); gray.release(); edges.release(); hierarchy.release()
+                            bmp32.recycle()
+                            return sorted
+                        }
                     }
                 }
 
@@ -188,7 +209,7 @@ class DocumentScanner {
                     val hullPoints = tryConvexHullQuad(contour)
                     if (hullPoints != null) {
                         val qArea = computeQuadArea(hullPoints[0], hullPoints[1], hullPoints[2], hullPoints[3])
-                        if (qArea >= imageArea * MIN_AREA_RATIO) {
+                        if (qArea >= imageArea * MIN_AREA_RATIO * 0.6f) {
                             src.release(); gray.release(); edges.release(); hierarchy.release()
                             bmp32.recycle()
                             return hullPoints
@@ -541,6 +562,13 @@ class DocumentScanner {
         if (corners.any { it.x.isNaN() || it.y.isNaN() }) return useFallbackCorners(width, height)
         val qa = computeQuadArea(tl, tr, br, bl)
         if (qa < (width * height).toFloat() * MIN_AREA_RATIO) return useFallbackCorners(width, height)
+        // 额外边长校验：防止边界扫描产生极小四边形
+        val minX = minOf(tl.x, tr.x, bl.x, br.x)
+        val maxX = maxOf(tl.x, tr.x, bl.x, br.x)
+        val minY = minOf(tl.y, tr.y, bl.y, br.y)
+        val maxY = maxOf(tl.y, tr.y, bl.y, br.y)
+        if ((maxX - minX) < width * MIN_SIDE_RATIO || (maxY - minY) < height * MIN_SIDE_RATIO)
+            return useFallbackCorners(width, height)
         return sortCorners(tl, tr, br, bl)
     }
 
@@ -636,7 +664,7 @@ class DocumentScanner {
     }
 
     private fun useFallbackCorners(width: Int, height: Int): List<PointF> {
-        val margin = minOf(width, height) / 20
+        val margin = minOf(width, height) / 8  // v3.2: /20→/8 增大默认边距，防止裁剪过小
         return listOf(
             PointF(margin.toFloat(), margin.toFloat()),
             PointF((width - margin).toFloat(), margin.toFloat()),
@@ -689,10 +717,18 @@ class DocumentScanner {
         val dst = org.opencv.core.Mat()
         Imgproc.warpPerspective(src, dst, perspectiveMat, size, Imgproc.INTER_LINEAR)
 
-        val result = Bitmap.createBitmap(dstWidth, dstHeight, Bitmap.Config.ARGB_8888)
-        Utils.matToBitmap(dst, result)
+        // ── 锐化（unsharp mask）：补偿 warp 插值造成的模糊 ──
+        val blurred = org.opencv.core.Mat()
+        Imgproc.GaussianBlur(dst, blurred, org.opencv.core.Size(0.0, 0.0), 1.0)
+        val sharpened = org.opencv.core.Mat()
+        // dst + (dst - blurred) × 0.15 → 适度锐化，避免放大压缩噪声
+        Core.addWeighted(dst, 1.0 + 0.15, blurred, -0.15, 0.0, sharpened)
 
-        src.release(); dst.release(); srcMat.release(); dstMat.release(); perspectiveMat.release()
+        val result = Bitmap.createBitmap(dstWidth, dstHeight, Bitmap.Config.ARGB_8888)
+        Utils.matToBitmap(sharpened, result)
+
+        src.release(); dst.release(); blurred.release(); sharpened.release()
+        srcMat.release(); dstMat.release(); perspectiveMat.release()
         bmp32.recycle()
         return result
     }
@@ -718,6 +754,118 @@ class DocumentScanner {
 
     private fun distance(p1: PointF, p2: PointF): Float {
         val dx = p2.x - p1.x; val dy = p2.y - p1.y; return sqrt(dx * dx + dy * dy)
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //  文本摆正（去倾斜）
+    // ════════════════════════════════════════════════════════════════
+
+    /**
+     * 自动摆正（去倾斜）文档图像
+     *
+     * 基于 Hough Line Transform 检测文本行的主导倾斜角度，
+     * 然后反向旋转校正。
+     *
+     * @param bitmap 源图（建议先做透视变换再摆正）
+     * @return 摆正后的 bitmap
+     */
+    fun deskew(bitmap: Bitmap): Bitmap {
+        if (initOpenCV()) {
+            try {
+                return deskewOpenCV(bitmap)
+            } catch (_: Exception) {}
+        }
+        return bitmap
+    }
+
+    /** OpenCV HoughLines 去倾斜 */
+    private fun deskewOpenCV(bitmap: Bitmap): Bitmap {
+        val w = bitmap.width; val h = bitmap.height
+        val bmp32 = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+
+        // 1. 转为灰度
+        val src = org.opencv.core.Mat()
+        Utils.bitmapToMat(bmp32, src)
+        val gray = org.opencv.core.Mat()
+        Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
+
+        // 2. 取反 + 二值化（使文字区域为白色，背景为黑色 — Hough 对白线更敏感）
+        val binary = org.opencv.core.Mat()
+        Imgproc.adaptiveThreshold(
+            gray, binary, 255.0,
+            Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
+            Imgproc.THRESH_BINARY_INV,  // 文字白色，背景黑色
+            31, 15.0
+        )
+
+        // 3. 形态学闭操作连接文字笔画
+        val kernel = Imgproc.getStructuringElement(
+            Imgproc.MORPH_RECT, org.opencv.core.Size(5.0, 3.0)
+        )
+        Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_CLOSE, kernel)
+
+        // 4. HoughLines 检测直线
+        val lines = org.opencv.core.Mat()
+        // HoughLines: rho=1, theta=π/180 (1°), threshold 取图像对角线 2%
+        val threshold = (sqrt((w * w + h * h).toFloat()) * 0.02f).toInt().coerceIn(50, 400)
+        Imgproc.HoughLines(binary, lines, 1.0, Math.PI / 180.0, threshold)
+
+        // 5. 收集所有直线角度，只保留接近水平的线（±45°）
+        val angles = mutableListOf<Double>()
+        for (i in 0 until lines.rows()) {
+            val data = DoubleArray(2)
+            lines.get(i, 0, data)
+            val theta = data[1]  // 弧度
+            // 只处理接近水平的方向（0 ± 45°）
+            val deg = Math.toDegrees(theta + Math.PI / 2) % 180
+            val normalized = if (deg > 90) deg - 180 else deg
+            if (abs(normalized) < 45.0) {
+                angles.add(normalized)
+            }
+        }
+
+        // 释放中间 Mat
+        src.release(); gray.release(); binary.release(); lines.release()
+        bmp32.recycle()
+
+        // 6. 无有效角度 → 返回原图
+        if (angles.isEmpty()) return bitmap
+
+        // 7. 取角度中位数（抗干扰）
+        angles.sort()
+        val medianAngle = angles[angles.size / 2]
+
+        // 如果角度很小（< 0.5°），不旋转
+        if (abs(medianAngle) < 0.5) return bitmap
+
+        // 8. 执行旋转
+        val center = org.opencv.core.Point(w / 2.0, h / 2.0)
+        val rotMat = Imgproc.getRotationMatrix2D(center, medianAngle, 1.0)
+
+        // 计算旋转后新边界，确保内容完整
+        val cos = abs(rotMat[0, 0][0])
+        val sin = abs(rotMat[0, 1][0])
+        val newW = (h * sin + w * cos).toInt()
+        val newH = (h * cos + w * sin).toInt()
+
+        // 调整旋转矩阵使图像居中
+        rotMat.put(0, 2, rotMat[0, 2][0] + newW / 2.0 - center.x)
+        rotMat.put(1, 2, rotMat[1, 2][0] + newH / 2.0 - center.y)
+
+        val rotated = org.opencv.core.Mat()
+        val src2 = org.opencv.core.Mat()
+        Utils.bitmapToMat(bitmap.copy(Bitmap.Config.ARGB_8888, false), src2)
+        Imgproc.warpAffine(
+            src2, rotated, rotMat, org.opencv.core.Size(newW.toDouble(), newH.toDouble()),
+            Imgproc.INTER_LINEAR, org.opencv.core.Core.BORDER_CONSTANT,
+            org.opencv.core.Scalar(255.0, 255.0, 255.0, 255.0)
+        )
+
+        val result = Bitmap.createBitmap(newW, newH, Bitmap.Config.ARGB_8888)
+        Utils.matToBitmap(rotated, result)
+
+        src2.release(); rotated.release(); rotMat.release()
+        return result
     }
 
     // ════════════════════════════════════════════════════════════════

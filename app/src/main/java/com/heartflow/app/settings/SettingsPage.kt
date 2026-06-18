@@ -25,6 +25,7 @@ data class SearchableSetting(val tabIndex: Int, val title: String, val keywords:
 
 @Composable
 fun SettingsSearchResults(query: String, tabNames: List<String>, tabIcons: List<ImageVector>, onSelectTab: (Int) -> Unit) {
+    val scheme = LocalThemeScheme.current
     val allSettings = remember {
         listOf(
             SearchableSetting(0, "性格选择", listOf("性格", "个性", "人格", "personality")),
@@ -72,16 +73,20 @@ fun SettingsSearchResults(query: String, tabNames: List<String>, tabIcons: List<
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
-            Text("搜索「$query」共 ${results.size} 个结果", fontSize = 13.sp, color = Color.Gray)
+            Text("搜索「$query」共 ${results.size} 个结果", fontSize = 13.sp, color = scheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
         }
         if (results.isEmpty()) {
             item {
-                Card(Modifier.fillMaxWidth()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow)
+                ) {
                     Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.SearchOff, null, modifier = Modifier.size(48.dp), tint = Color.Gray)
+                        Icon(Icons.Default.SearchOff, null, modifier = Modifier.size(48.dp), tint = scheme.onSurfaceVariant)
                         Spacer(Modifier.height(8.dp))
-                        Text("未找到匹配的设置项", color = Color.Gray)
+                        Text("未找到匹配的设置项", color = scheme.onSurfaceVariant)
                     }
                 }
             }
@@ -91,7 +96,8 @@ fun SettingsSearchResults(query: String, tabNames: List<String>, tabIcons: List<
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable { onSelectTab(item.tabIndex) },
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow)
                 ) {
                     Row(
                         Modifier.padding(12.dp),
@@ -106,9 +112,9 @@ fun SettingsSearchResults(query: String, tabNames: List<String>, tabIcons: List<
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text(item.title, fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                            Text("位于「${tabNames[item.tabIndex]}」设置", fontSize = 11.sp, color = Color.Gray)
+                            Text("位于「${tabNames[item.tabIndex]}」设置", fontSize = 11.sp, color = scheme.onSurfaceVariant)
                         }
-                        Icon(Icons.Default.ChevronRight, null, modifier = Modifier.size(18.dp), tint = Color.Gray)
+                        Icon(Icons.Default.ChevronRight, null, modifier = Modifier.size(18.dp), tint = scheme.onSurfaceVariant)
                     }
                 }
             }
@@ -125,6 +131,7 @@ fun SettingsSectionHeader(
     subtitle: String = "",
     modifier: Modifier = Modifier
 ) {
+    val scheme = LocalThemeScheme.current
     Row(
         modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
@@ -139,7 +146,7 @@ fun SettingsSectionHeader(
         Column {
             Text(title, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             if (subtitle.isNotBlank()) {
-                Text(subtitle, fontSize = 12.sp, color = Color.Gray)
+                Text(subtitle, fontSize = 12.sp, color = scheme.onSurfaceVariant)
             }
         }
     }
@@ -150,6 +157,7 @@ fun SettingsSectionHeader(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsPage(viewModel: ChatViewModel, uiState: ChatUiState) {
+    val scheme = LocalThemeScheme.current
     var selectedTab by remember { mutableIntStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
 
@@ -169,11 +177,16 @@ fun SettingsPage(viewModel: ChatViewModel, uiState: ChatUiState) {
         topBar = {
             TopAppBar(
                 title = { Text("设置") },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = Color.White)
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = scheme.glassSurface,
+                    titleContentColor = scheme.onSurface
+                )
             )
         },
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                containerColor = scheme.glassSurface
+            ) {
                 NavigationBarItem(icon = { Icon(Icons.AutoMirrored.Filled.Chat, "聊天") }, label = { Text("聊天") }, selected = false, onClick = { viewModel.setPage("chat") })
                 NavigationBarItem(icon = { Icon(Icons.Default.Scanner, "扫描") }, label = { Text("扫描") }, selected = false, onClick = { viewModel.setPage("scanner") })
                 NavigationBarItem(icon = { Icon(Icons.Default.History, "历史") }, label = { Text("历史") }, selected = false, onClick = { viewModel.setPage("history") })
@@ -200,10 +213,12 @@ fun SettingsPage(viewModel: ChatViewModel, uiState: ChatUiState) {
                     }
                 },
                 singleLine = true,
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(14.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                    focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                    unfocusedBorderColor = scheme.outline.copy(alpha = 0.3f),
+                    focusedBorderColor = scheme.primary.copy(alpha = 0.5f),
+                    focusedContainerColor = scheme.surfaceContainerLow,
+                    unfocusedContainerColor = scheme.surfaceContainerLow
                 )
             )
 
@@ -211,7 +226,7 @@ fun SettingsPage(viewModel: ChatViewModel, uiState: ChatUiState) {
             ScrollableTabRow(
                 selectedTabIndex = selectedTab,
                 edgePadding = 8.dp,
-                divider = { HorizontalDivider() }
+                divider = {}
             ) {
                 tabs.forEachIndexed { index, title ->
                     Tab(

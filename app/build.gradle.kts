@@ -6,14 +6,14 @@ plugins {
 
 android {
     namespace = "com.heartflow.app"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.heartflow.app"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 50
-        versionName = "2.5.9"
+        targetSdk = 36
+        versionCode = 59
+        versionName = "2.6.1"
         buildConfigField("String", "BAIDU_API_KEY", "\"${project.findProperty("BAIDU_API_KEY") ?: ""}\"")
         // 只保留 arm64-v8a，减少 APK 体积
         ndk { abiFilters += "arm64-v8a" }
@@ -31,8 +31,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
     }
 
     buildFeatures {
@@ -59,4 +61,6 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.0.4")
     // org.json 是 Android 内置的，无需额外依赖
     implementation("org.opencv:opencv:4.10.0")
+    // GeckoView 完整浏览器引擎（替换系统 WebView）
+    implementation("org.mozilla.geckoview:geckoview:151.0.20260525130955")
 }

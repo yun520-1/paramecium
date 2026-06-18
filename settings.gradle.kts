@@ -16,6 +16,7 @@ dependencyResolutionManagement {
         maven { url = uri("https://maven.aliyun.com/repository/central") }
         google()
         mavenCentral()
+        maven { url = uri("https://maven.mozilla.org/maven2") }
     }
 }
 

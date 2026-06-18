@@ -8,7 +8,10 @@ import android.speech.SpeechRecognizer
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -24,7 +27,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -35,7 +38,7 @@ import androidx.compose.ui.unit.sp
 import com.heartflow.data.*
 import java.util.*
 
-// ─── 输入框（含语音 + 附件） ─────────────────────────
+// ─── 现代化输入栏（含语音 + 附件）─────────────────────
 
 @Composable
 fun ChatInput(
@@ -55,7 +58,10 @@ fun ChatInput(
     var speechRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
     val context = LocalContext.current
 
-    // 语音识别器清理：离开页面时销毁
+    val scheme = LocalThemeScheme.current
+    val isSendEnabled = text.isNotBlank() || voiceState.isRecording
+
+    // 语音识别器清理
     DisposableEffect(Unit) {
         onDispose {
             speechRecognizer?.destroy()
@@ -67,14 +73,11 @@ fun ChatInput(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            // 权限已获取，启动语音识别
             val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
             recognizer.setRecognitionListener(object : android.speech.RecognitionListener {
                 override fun onResults(results: Bundle) {
                     val matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    if (matches != null && matches.isNotEmpty()) {
-                        onVoiceSend(matches[0])
-                    }
+                    if (matches != null && matches.isNotEmpty()) onVoiceSend(matches[0])
                     recognizer.destroy()
                     if (speechRecognizer === recognizer) speechRecognizer = null
                     onVoiceToggle { it.copy(isRecording = false) }
@@ -199,18 +202,21 @@ fun ChatInput(
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                color = scheme.glassSurface,
                 shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
             )
     ) {
-        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            // ── 语音录音状态 ──
             if (voiceState.isRecording) {
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f),
+                    tonalElevation = 0.dp
                 ) {
                     Row(
-                        Modifier.padding(12.dp).fillMaxWidth(),
+                        Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
@@ -222,45 +228,51 @@ fun ChatInput(
                                 label = "pulse"
                             )
                             Box(
-                                Modifier
-                                    .size(12.dp)
-                                    .background(Color.Red.copy(alpha = alpha), CircleShape)
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFFEF5350).copy(alpha = alpha))
                             )
-                            Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width(10.dp))
                             Text(
-                                "录音中... ${voiceState.recordingDuration}s",
+                                "录音中 ${voiceState.recordingDuration}s",
                                 color = MaterialTheme.colorScheme.error,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp
                             )
                         }
-                        IconButton(onClick = {
-                            speechRecognizer?.destroy()
-                            speechRecognizer = null
-                            onVoiceToggle { it.copy(isRecording = false) }
-                        }) {
-                            Icon(Icons.Default.Stop, "停止录音", tint = MaterialTheme.colorScheme.error)
+                        IconButton(
+                            onClick = {
+                                speechRecognizer?.destroy(); speechRecognizer = null
+                                onVoiceToggle { it.copy(isRecording = false) }
+                            },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(Icons.Default.Stop, "停止", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
             }
 
+            // ── 快捷操作栏 ──
             Row(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // 附件按钮
                 IconButton(
-                    onClick = { if (!isProcessing) showAttachmentMenu = true },
+                    onClick = { if (!isProcessing) showAttachmentMenu = !showAttachmentMenu },
                     modifier = Modifier.size(32.dp)
                 ) {
                     Icon(
-                        Icons.Default.AttachFile,
-                        contentDescription = "附件",
+                        Icons.Default.AttachFile, "附件",
                         modifier = Modifier.size(18.dp),
                         tint = if (isProcessing) Color.Gray else MaterialTheme.colorScheme.primary
                     )
                 }
                 Spacer(Modifier.width(2.dp))
 
+                // 附件菜单
                 Box {
                     DropdownMenu(
                         expanded = showAttachmentMenu,
@@ -286,6 +298,7 @@ fun ChatInput(
 
                 Spacer(Modifier.width(4.dp))
 
+                // 快捷 Chip 滚动条
                 Row(
                     modifier = Modifier
                         .weight(1f)
@@ -293,120 +306,136 @@ fun ChatInput(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    AssistChip(
+                    SuggestionChip(
                         onClick = { onDream() },
                         label = { Text("做梦", fontSize = 12.sp) },
-                        leadingIcon = { Text("💤", fontSize = 13.sp) },
-                        modifier = Modifier.height(30.dp)
+                        icon = { Text("💤", fontSize = 12.sp) },
+                        modifier = Modifier.height(28.dp)
                     )
-                    AssistChip(
+                    SuggestionChip(
                         onClick = { onEvolve() },
                         label = { Text("进化", fontSize = 12.sp) },
-                        leadingIcon = { Text("🧬", fontSize = 13.sp) },
-                        modifier = Modifier.height(30.dp)
+                        icon = { Text("🧬", fontSize = 12.sp) },
+                        modifier = Modifier.height(28.dp)
                     )
-                    AssistChip(
+                    SuggestionChip(
                         onClick = { text = "/new " },
                         label = { Text("新对话", fontSize = 12.sp) },
-                        leadingIcon = { Text("✨", fontSize = 13.sp) },
-                        modifier = Modifier.height(30.dp)
+                        icon = { Text("✨", fontSize = 12.sp) },
+                        modifier = Modifier.height(28.dp)
                     )
                 }
             }
 
+            // ── 输入行 ──
             Row(
                 modifier = Modifier.fillMaxWidth().imePadding(),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Bottom
             ) {
                 OutlinedTextField(
                     value = text,
                     onValueChange = { text = it },
                     modifier = Modifier
                         .weight(1f)
-                        .onFocusChanged { isFocused = it.isFocused }
-                        .shadow(
-                            elevation = if (isFocused) 14.dp else 4.dp,
-                            shape = RoundedCornerShape(28.dp),
-                            clip = false
-                        ),
+                        .onFocusChanged { isFocused = it.isFocused },
                     placeholder = { Text("输入消息...", fontSize = 15.sp) },
                     shape = RoundedCornerShape(28.dp),
                     singleLine = false,
                     maxLines = 4,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(
+                        onSend = {
+                            if (text.isNotBlank()) {
+                                onSend(text.trim()); text = ""
+                            }
+                        }
+                    ),
                     colors = OutlinedTextFieldDefaults.colors(
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
-                        focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                        focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+                        unfocusedContainerColor = scheme.surface.copy(alpha = 0.5f),
+                        focusedContainerColor = scheme.surface.copy(alpha = 0.7f)
                     )
                 )
 
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(8.dp))
 
+                // 语音按钮（仅当没有文字且不在处理时显示）
                 if (!isProcessing && !voiceState.isRecording && text.isBlank()) {
-                    FilledIconButton(
+                    Surface(
                         onClick = {
                             onVoiceToggle { it.copy(isRecording = true, recordingDuration = 0) }
-                            // 权限回调中启动识别器，避免权限未授权就调用 startListening
                             recordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         },
-                        modifier = Modifier.size(48.dp),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
-                        )
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                        tonalElevation = 0.dp,
+                        modifier = Modifier.size(48.dp)
                     ) {
-                        Icon(
-                            Icons.Default.Mic,
-                            "语音",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.Mic, "语音",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(6.dp))
                 }
 
+                // 停止/发送按钮
                 if (isProcessing) {
-                    FilledIconButton(
+                    Surface(
                         onClick = { onStop(); text = "" },
-                        modifier = Modifier.size(48.dp),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.error
-                        )
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.error,
+                        tonalElevation = 0.dp,
+                        modifier = Modifier.size(48.dp)
                     ) {
-                        Icon(Icons.Default.Close, "停止", tint = Color.White)
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Close, "停止", tint = Color.White, modifier = Modifier.size(22.dp))
+                        }
                     }
                 } else {
-                    FilledIconButton(
+                    val sendBtnColor by animateColorAsState(
+                        targetValue = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else scheme.surfaceVariant,
+                        animationSpec = tween(200),
+                        label = "sendBtnColor"
+                    )
+                    val sendIconColor by animateColorAsState(
+                        targetValue = if (text.isNotBlank()) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+                        animationSpec = tween(200),
+                        label = "sendIconColor"
+                    )
+                    Surface(
                         onClick = {
                             if (text.isNotBlank()) {
-                                onSend(text.trim())
-                                text = ""
+                                onSend(text.trim()); text = ""
                             }
                         },
-                        enabled = text.isNotBlank(),
-                        modifier = Modifier.size(48.dp),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = if (text.isNotBlank())
-                                MaterialTheme.colorScheme.primary
-                            else
-                                MaterialTheme.colorScheme.surfaceVariant
-                        )
+                        shape = CircleShape,
+                        color = sendBtnColor,
+                        tonalElevation = 0.dp,
+                        modifier = Modifier.size(48.dp)
                     ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.Send,
-                            "发送",
-                            tint = if (text.isNotBlank()) MaterialTheme.colorScheme.onPrimary
-                                   else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Send, "发送",
+                                tint = sendIconColor,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
                 }
             }
         }
 
+        // 顶部细线分割
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(0.5.dp)
-                .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
+                .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.08f))
                 .align(Alignment.TopCenter)
         )
     }

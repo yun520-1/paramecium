@@ -24,6 +24,7 @@ class ToolRegistry {
         register(GlobTool())
         register(WebSearchToolImpl())
         register(WebFetchToolImpl())
+        register(BrowserTool())        // 完整浏览器引擎（GeckoView）
         register(ImageUnderstandingToolImpl())
 
         // WRITE 工具

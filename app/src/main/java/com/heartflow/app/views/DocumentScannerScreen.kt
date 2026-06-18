@@ -38,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.heartflow.app.LocalThemeScheme
 import com.heartflow.app.imaging.ScanImageProcessor
 import com.heartflow.app.model.ScanFilterType
 import com.heartflow.scanner.DocumentScanner
@@ -66,6 +67,7 @@ import kotlinx.coroutines.withContext
 fun DocumentScannerScreen(
     onBack: () -> Unit = {}
 ) {
+    val scheme = LocalThemeScheme.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -110,7 +112,7 @@ fun DocumentScannerScreen(
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
+                    containerColor = scheme.glassSurface,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
                     navigationIconContentColor = MaterialTheme.colorScheme.onPrimary
                 )
@@ -128,7 +130,7 @@ fun DocumentScannerScreen(
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                    containerColor = scheme.surfaceContainerLow
                 )
             ) {
                 Row(
@@ -289,9 +291,11 @@ private fun StatusCard(
     containerColor: androidx.compose.ui.graphics.Color,
     small: Boolean = false
 ) {
+    val scheme = LocalThemeScheme.current
     AnimatedVisibility(visible = visible, enter = fadeIn(), exit = fadeOut()) {
         Card(
             modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(containerColor = containerColor)
         ) {
             Row(
@@ -317,6 +321,7 @@ private fun ActionBar(
     onPreview: () -> Unit,
     onSave: () -> Unit
 ) {
+    val scheme = LocalThemeScheme.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -366,7 +371,11 @@ private fun FilterSelector(
     hasCorrection: Boolean,
     onFilterSelected: (ScanFilterType) -> Unit
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    val scheme = LocalThemeScheme.current
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow)
+    ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text("扫描效果", fontWeight = FontWeight.Bold, fontSize = 14.sp)
             Text(
@@ -402,17 +411,18 @@ private fun FilterItem(
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
+    val scheme = LocalThemeScheme.current
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .width(72.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
             .then(
                 if (isSelected) Modifier.border(
                     2.dp,
                     MaterialTheme.colorScheme.primary,
-                    RoundedCornerShape(8.dp)
+                    RoundedCornerShape(12.dp)
                 ) else Modifier
             )
             .padding(8.dp)
@@ -420,7 +430,7 @@ private fun FilterItem(
         Box(
             modifier = Modifier
                 .size(48.dp)
-                .clip(RoundedCornerShape(8.dp))
+                .clip(RoundedCornerShape(12.dp))
                 .background(
                     when (filter) {
                         ScanFilterType.ORIGINAL -> Color(0xFF888888)
@@ -460,7 +470,11 @@ private fun FormatSelector(
     selectedFormat: String,
     onFormatSelected: (String) -> Unit
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    val scheme = LocalThemeScheme.current
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow)
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -498,6 +512,7 @@ private fun DualPreviewPane(
     filterName: String,
     isProcessing: Boolean
 ) {
+    val scheme = LocalThemeScheme.current
     Row(
         modifier = Modifier
             .fillMaxWidth(),
@@ -506,7 +521,8 @@ private fun DualPreviewPane(
         // 原图侧
         Card(
             modifier = Modifier.weight(1f),
-            shape = RoundedCornerShape(8.dp)
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow)
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
@@ -531,7 +547,8 @@ private fun DualPreviewPane(
         // 处理后侧
         Card(
             modifier = Modifier.weight(1f),
-            shape = RoundedCornerShape(8.dp)
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow)
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
@@ -596,12 +613,13 @@ private fun DualPreviewPane(
  */
 @Composable
 private fun EmptyState() {
+    val scheme = LocalThemeScheme.current
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 200.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            containerColor = scheme.surfaceVariant.copy(alpha = 0.3f)
         )
     ) {
         Box(
@@ -665,22 +683,26 @@ private suspend fun loadAndSetBitmap(
  */
 private fun loadBitmapSampled(context: Context, uri: Uri, maxSize: Int): Bitmap? {
     return try {
+        // 1. 先读尺寸（inJustDecodeBounds 只读元数据，不加载像素）
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         context.contentResolver.openInputStream(uri)?.use { stream ->
-            // 第一次解码：只读尺寸
-            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeStream(stream, null, opts)
         }
 
+        val w = opts.outWidth
+        val h = opts.outHeight
+        if (w <= 0 || h <= 0) return null
+
+        // 2. 计算合适的采样率
+        val sampleOpts = BitmapFactory.Options().apply {
+            var sample = 1
+            while (w / sample > maxSize || h / sample > maxSize) sample *= 2
+            inSampleSize = sample
+        }
+
+        // 3. 加载采样后的图片
         context.contentResolver.openInputStream(uri)?.use { stream ->
-            val opts = BitmapFactory.Options().apply {
-                // 计算采样率
-                val w = outWidth
-                val h = outHeight
-                var sample = 1
-                while (w / sample > maxSize || h / sample > maxSize) sample *= 2
-                inSampleSize = sample
-            }
-            BitmapFactory.decodeStream(stream, null, opts)
+            BitmapFactory.decodeStream(stream, null, sampleOpts)
         }
     } catch (e: Exception) {
         null
@@ -709,15 +731,32 @@ private suspend fun runDocumentCorrection(
                     computeQuadArea(corners) == 0f
 
                 if (!isFallback && corners.size == 4) {
-                    "✅ 文档边缘检测成功，正在透视矫正..." to
-                        scanner.perspectiveTransform(bitmap, corners)
+                    // 矫正后的区域面积不能太小（至少占原图 5%）
+                    val qArea = computeQuadArea(corners)
+                    val imgArea = bitmap.width * bitmap.height
+                    if (qArea < imgArea * 0.05f) {
+                        null to bitmap
+                    } else {
+                        // ── 第 1 步：透视变换（将文档区域矫正为矩形）──
+                        val warped = scanner.perspectiveTransform(bitmap, corners)
+
+                        // ── 第 2 步：文本摆正（去倾斜）──
+                        val straightened = scanner.deskew(warped)
+
+                        // ── 第 3 步：自动裁剪空白边缘（去除变换后白边）──
+                        val cropped = ImageProcessor(context).autoCrop(straightened)
+
+                        "✅ 文档边缘检测成功，已自动矫正、摆正并裁切..." to cropped
+                    }
                 } else {
-                    null to bitmap  // 通知降级
+                    // 检测结果不可靠时，至少执行自动裁边
+                    null to ImageProcessor(context).autoCrop(bitmap)
                 }
             } catch (e: Exception) {
-                // 检测失败，做基础增强降级
+                // 检测失败，做基础增强降级（含自动裁边）
                 null to ImageProcessor(context).let { proc ->
-                    proc.adjustContrast(proc.adjustBrightness(bitmap, 1.1f), 1.15f)
+                    val enhanced = proc.adjustContrast(proc.adjustBrightness(bitmap, 1.1f), 1.15f)
+                    proc.autoCrop(enhanced)
                 }
             }
         }

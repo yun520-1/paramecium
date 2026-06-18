@@ -1,17 +1,15 @@
 package com.heartflow.app
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.*
 import androidx.compose.animation.core.*
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.*
@@ -20,7 +18,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -36,26 +36,17 @@ import kotlinx.coroutines.delay
 @Composable
 fun HeartFlowApp(viewModel: ChatViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsState()
-    // ── 浏览器 ViewModel — 与 ChatViewModel 共享同一个实例 ──────────────
     val browserViewModel: BrowserViewModel = viewModel()
 
-    // ── 修复返回手势：拦截系统返回键 ──────────────────────────────────
     BackHandler {
         when (uiState.currentPage) {
-            "chat" -> {
-                // chat页面不处理，让系统默认退出
-            }
-            "history" -> viewModel.setPage("chat")
-            "terminal" -> viewModel.setPage("chat")
-            "browser" -> viewModel.setPage("chat")
-            "scanner" -> viewModel.setPage("chat")
+            "chat" -> { /* 让系统处理 */ }
+            "history", "terminal", "browser", "scanner" -> viewModel.setPage("chat")
             "memory" -> viewModel.setPage("settings")
-            "settings" -> viewModel.setPage("chat")
             else -> viewModel.setPage("chat")
         }
     }
 
-    // 监听 ChatViewModel 的浏览器命令：工具调用时自动跳转到浏览器
     LaunchedEffect(Unit) {
         viewModel.browserCommand.collect { cmd ->
             browserViewModel.sendCommand(cmd)
@@ -64,67 +55,33 @@ fun HeartFlowApp(viewModel: ChatViewModel = viewModel()) {
     }
 
     var showSplash by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) { delay(1500L); showSplash = false }
 
-    // 启动动画：1.5秒后关闭 Splash
-    LaunchedEffect(Unit) {
-        delay(1500L)
-        showSplash = false
-    }
-
-    val colorScheme = appliedColorScheme(uiState.themeMode, uiState.themeVariant, isSystemInDarkTheme())
-
-    MaterialTheme(colorScheme = colorScheme) {
+    HeartFlowTheme(mode = uiState.themeMode, variant = uiState.themeVariant) {
         AnimatedContent(
             targetState = showSplash,
-            transitionSpec = { fadeIn(animationSpec = tween(800)) togetherWith fadeOut(animationSpec = tween(300)) },
+            transitionSpec = {
+                fadeIn(tween(800)) togetherWith fadeOut(tween(300))
+            },
             label = "splashAnimation"
         ) { isSplash ->
             if (isSplash) {
-                // ── Splash 画面 ───────────────────────────
-                Box(
-                    modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        // 心虫 logo 动画（从0.3→1.0 透明度 + 轻微上浮）
-                        val logoAlpha by animateFloatAsState(
-                            targetValue = 1f,
-                            animationSpec = tween(800, easing = EaseOutCubic)
-                        )
-                        val logoOffset by animateDpAsState(
-                            targetValue = 0.dp,
-                            animationSpec = tween(600, easing = EaseOutCubic)
-                        )
-                        Text(
-                            text = "🐛",
-                            fontSize = 64.sp,
-                            modifier = Modifier
-                                .alpha(logoAlpha)
-                                .offset(y = logoOffset - 20.dp)
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            text = "心虫",
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.alpha(logoAlpha)
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            text = "Paramecium",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-                            modifier = Modifier.alpha(logoAlpha)
-                        )
-                    }
-                }
+                SplashContent()
             } else {
-                // ── 主界面：页面级别的 AnimatedContent ─────
                 AnimatedContent(
                     targetState = uiState.currentPage,
                     transitionSpec = {
-                        fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(250))
+                        val direction = if (targetState > initialState) 1 else -1
+                        (slideInHorizontally(
+                            animationSpec = tween(350, easing = EaseOutCubic),
+                            initialOffsetX = { fullWidth -> direction * fullWidth / 4 }
+                        ) + fadeIn(tween(250)))
+                            .togetherWith(
+                                slideOutHorizontally(
+                                    animationSpec = tween(300, easing = EaseInCubic),
+                                    targetOffsetX = { fullWidth -> -direction * fullWidth / 4 }
+                                ) + fadeOut(tween(200))
+                            )
                     },
                     label = "pageTransition"
                 ) { page ->
@@ -146,6 +103,74 @@ fun HeartFlowApp(viewModel: ChatViewModel = viewModel()) {
     }
 }
 
+// ── 现代化 Splash ──────────────────────────────────
+
+@Composable
+private fun SplashContent() {
+    val infiniteTransition = rememberInfiniteTransition(label = "splashGlow")
+    val glowAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.4f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = EaseInOutCubic),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glowAlpha"
+    )
+
+    val logoAlpha by animateFloatAsState(
+        targetValue = 1f,
+        animationSpec = tween(800, easing = EaseOutCubic),
+        label = "logoAlpha"
+    )
+
+    val scheme = LocalThemeScheme.current
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        scheme.surface,
+                        scheme.background
+                    )
+                )
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // 发光圆环
+            Box(
+                modifier = Modifier
+                    .size(100.dp)
+                    .alpha(glowAlpha)
+                    .clip(RoundedCornerShape(50.dp))
+                    .background(scheme.primary.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("🐛", fontSize = 48.sp, modifier = Modifier.alpha(logoAlpha))
+            }
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "心虫",
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.alpha(logoAlpha)
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "Paramecium",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                modifier = Modifier.alpha(logoAlpha)
+            )
+        }
+    }
+}
+
+// ── 聊天主页 ────────────────────────────────────────
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatPage(viewModel: ChatViewModel, uiState: ChatUiState) {
@@ -155,26 +180,29 @@ fun ChatPage(viewModel: ChatViewModel, uiState: ChatUiState) {
     var showImageViewer by remember { mutableStateOf(false) }
     var viewingAttachment by remember { mutableStateOf<MediaAttachment?>(null) }
 
+    val scheme = LocalThemeScheme.current
+
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
             CenterAlignedTopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        // 头像 Emoji（缩小尺寸）
                         Text(uiState.personality.emoji, fontSize = 22.sp)
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(10.dp))
                         Column {
                             Text(uiState.personality.name, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                             Text(
                                 if (uiState.config?.apiKey?.isNotBlank() == true)
                                     "已连接 ${uiState.config?.provider}" else "未配置API",
-                                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
                             )
                         }
                     }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
+                    containerColor = scheme.glassSurface,
                     titleContentColor = MaterialTheme.colorScheme.onSurface
                 ),
                 actions = {
@@ -189,7 +217,7 @@ fun ChatPage(viewModel: ChatViewModel, uiState: ChatUiState) {
         },
         bottomBar = {
             NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                containerColor = scheme.glassSurface,
                 tonalElevation = 0.dp
             ) {
                 NavigationBarItem(
@@ -240,8 +268,9 @@ fun ChatPage(viewModel: ChatViewModel, uiState: ChatUiState) {
                 .background(
                     brush = Brush.verticalGradient(
                         colors = listOf(
-                            MaterialTheme.colorScheme.surface,
-                            MaterialTheme.colorScheme.background
+                            scheme.surface,
+                            scheme.gradientStart,
+                            scheme.background
                         )
                     )
                 )
@@ -252,34 +281,26 @@ fun ChatPage(viewModel: ChatViewModel, uiState: ChatUiState) {
                     .weight(1f)
                     .padding(horizontal = 4.dp, vertical = 2.dp),
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
-            ) { itemsIndexed(uiState.messages) { index, message ->
-                    ChatMessageItem(
-                        message = message,
-                        index = index,
-                        speakingMessageIndex = uiState.speakingMessageIndex,
-                        onEdit = { idx ->
-                            editMessageIndex = idx
-                            editText = message.content
-                            showEditDialog = true
-                        },
-                        onResend = { idx ->
-                            viewModel.resendMessage(idx)
-                        },
-                        onImageClick = { attachment ->
-                            viewingAttachment = attachment
-                            showImageViewer = true
-                        },
-                        onCancelTool = { idx ->
-                            viewModel.cancelToolCall(idx)
-                        },
-                        onSpeak = { idx ->
-                            viewModel.speakMessage(idx)
-                        },
-                        onStopSpeak = {
-                            viewModel.stopSpeaking()
-                        }
-                    )
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) { itemsIndexed(uiState.messages, key = { index, _ -> index }) { index, message ->
+                ChatMessageItem(
+                    message = message,
+                    index = index,
+                    speakingMessageIndex = uiState.speakingMessageIndex,
+                    onEdit = { idx ->
+                        editMessageIndex = idx
+                        editText = message.content
+                        showEditDialog = true
+                    },
+                    onResend = { idx -> viewModel.resendMessage(idx) },
+                    onImageClick = { attachment ->
+                        viewingAttachment = attachment
+                        showImageViewer = true
+                    },
+                    onCancelTool = { idx -> viewModel.cancelToolCall(idx) },
+                    onSpeak = { idx -> viewModel.speakMessage(idx) },
+                    onStopSpeak = { viewModel.stopSpeaking() }
+                )
             } }
 
             ChatInput(
@@ -307,7 +328,6 @@ fun ChatPage(viewModel: ChatViewModel, uiState: ChatUiState) {
             )
         }
 
-        // 编辑消息对话框
         if (showEditDialog) {
             AlertDialog(
                 onDismissRequest = { showEditDialog = false },
@@ -334,7 +354,6 @@ fun ChatPage(viewModel: ChatViewModel, uiState: ChatUiState) {
             )
         }
 
-        // 全屏图片查看器
         if (showImageViewer && viewingAttachment != null) {
             ImageViewer(
                 attachment = viewingAttachment!!,
