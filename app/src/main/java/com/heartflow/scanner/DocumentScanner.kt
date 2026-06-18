@@ -3,6 +3,7 @@ package com.heartflow.scanner
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PointF
+import android.util.Log
 import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.imgproc.Imgproc
@@ -26,6 +27,40 @@ import kotlin.math.sqrt
  *
  * 在 OpenCV 加载失败时降级到纯 Kotlin 实现（v2 保留的管道）。
  */
+
+/**
+ * 文档类型枚举
+ */
+enum class DocumentType {
+    /** A4/Letter 标准文档（宽高比 1.2~1.7） */
+    A4,
+    /** 小票/收据（细长条，宽高比 >2.8） */
+    RECEIPT,
+    /** 书页/双栏文档（宽高比 1.7~2.8） */
+    BOOK_PAGE,
+    /** 照片/方形图片（宽高比 <1.2） */
+    PHOTO,
+    /** 未知/其他类型 */
+    UNKNOWN
+}
+
+/**
+ * 一键扫描完整结果
+ *
+ * @property bitmap 处理后的位图
+ * @property documentType 识别到的文档类型
+ * @property corners 检测到的四角（降级时为 null）
+ * @property autoEnhanced 是否已执行自适应增强
+ * @property processingTimeMs 处理耗时（毫秒）
+ */
+data class ScanResult(
+    val bitmap: Bitmap,
+    val documentType: DocumentType,
+    val corners: List<PointF>?,
+    val autoEnhanced: Boolean,
+    val processingTimeMs: Long
+)
+
 class DocumentScanner {
 
     companion object {
@@ -105,6 +140,111 @@ class DocumentScanner {
         val ratioX = width.toFloat() / scaledWidth
         val ratioY = height.toFloat() / scaledHeight
         return result.map { PointF(it.x * ratioX, it.y * ratioY) }
+    }
+
+    /**
+     * 自动检测文档类型
+     *
+     * 根据输入图像的宽高比确定文档类型：
+     * - A4/文档：宽高比 1.2~1.7
+     * - 书页/双栏：宽高比 1.7~2.8
+     * - 小票/收据：宽高比 >2.8
+     * - 照片/方形：宽高比 <1.2
+     */
+    fun detectDocumentType(bitmap: Bitmap): DocumentType {
+        val w = bitmap.width.toFloat()
+        val h = bitmap.height.toFloat()
+        val ratio = if (w > h) w / h else h / w
+        return when {
+            ratio < 1.2f -> DocumentType.PHOTO
+            ratio <= 1.7f -> DocumentType.A4
+            ratio <= 2.8f -> DocumentType.BOOK_PAGE
+            else -> DocumentType.RECEIPT
+        }
+    }
+
+    /**
+     * 一键扫描：全自动文档扫描流水线
+     *
+     * 整合了文档检测、透视校正、纠偏、自适应增强于一次调用：
+     * 1. 自动检测文档类型（A4/小票/书页/照片）
+     * 2. 检测文档四角并进行透视校正
+     * 3. 自动摆正文本行
+     * 4. 根据文档类型应用自适应增强
+     *
+     * @param bitmap 输入图像
+     * @return ScanResult 包含处理结果、文档类型、处理耗时等信息
+     */
+    fun autoScan(bitmap: Bitmap): ScanResult {
+        val startMs = System.currentTimeMillis()
+
+        // 1. 检测文档类型
+        val docType = detectDocumentType(bitmap)
+
+        // 2. 尝试检测文档四角
+        var corners: List<PointF>? = null
+        var enhanced = false
+        var result: Bitmap
+
+        try {
+            corners = detectCorners(bitmap)
+        } catch (e: Exception) {
+            Log.w("DocumentScanner", "autoScan 四角检测失败", e)
+        }
+
+        if (corners != null && corners.isNotEmpty()) {
+            // 3a. 四角有效 → 透视校正 + 纠偏 + 增强
+            try {
+                result = perspectiveTransform(bitmap, corners)
+                result = deskew(result)
+
+                // 3b. 根据文档类型应用自适应增强
+                when (docType) {
+                    DocumentType.A4, DocumentType.BOOK_PAGE -> {
+                        // 文档类：灰度 + 增强对比，文字更清晰
+                        result = applyScanEffect(result, "gray")
+                        enhanced = true
+                    }
+                    DocumentType.RECEIPT -> {
+                        // 小票：自动增强，保留细节
+                        result = applyScanEffect(result, "original")
+                        enhanced = true
+                    }
+                    DocumentType.PHOTO -> {
+                        // 照片：保持原色，不做额外处理
+                    }
+                    DocumentType.UNKNOWN -> {
+                        // 未知：彩色增强
+                        result = applyScanEffect(result, "colorful")
+                        enhanced = true
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("DocumentScanner", "autoScan 管道执行失败，退回原图", e)
+                result = bitmap
+            }
+        } else {
+            // 4. 四角检测失败 → 降级为基本增强
+            enhanced = true
+            try {
+                result = when (docType) {
+                    DocumentType.PHOTO -> bitmap
+                    else -> applyScanEffect(bitmap, "original")
+                }
+            } catch (e: Exception) {
+                Log.w("DocumentScanner", "autoScan 降级处理失败", e)
+                result = bitmap
+            }
+        }
+
+        val elapsed = System.currentTimeMillis() - startMs
+        return ScanResult(
+            bitmap = result,
+            documentType = docType,
+            corners = if (corners.isNullOrEmpty()) null else corners,
+            autoEnhanced = enhanced,
+            processingTimeMs = elapsed
+        )
     }
 
     // ════════════════════════════════════════════════════════════════

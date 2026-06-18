@@ -42,6 +42,7 @@ import com.heartflow.app.LocalThemeScheme
 import com.heartflow.app.imaging.ScanImageProcessor
 import com.heartflow.app.model.ScanFilterType
 import com.heartflow.scanner.DocumentScanner
+import com.heartflow.scanner.DocumentType
 import com.heartflow.scanner.ImageProcessor as ImageProcessor
 import com.heartflow.scanner.PdfExporter
 import kotlinx.coroutines.Dispatchers
@@ -81,6 +82,7 @@ fun DocumentScannerScreen(
     var saveResult by remember { mutableStateOf<String?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var detectionStatus by remember { mutableStateOf<String?>(null) }
+    var autoScanInfo by remember { mutableStateOf<String?>(null) }
 
     val bitmapLoader = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -95,6 +97,7 @@ fun DocumentScannerScreen(
                         saveResult = null
                         errorMessage = null
                         detectionStatus = null
+                        autoScanInfo = null
                     },
                     onError = { errorMessage = it }
                 )
@@ -179,11 +182,36 @@ fun DocumentScannerScreen(
                 containerColor = MaterialTheme.colorScheme.secondaryContainer
             )
 
+            // ── 一键扫描状态 ──────────────────────────
+            StatusCard(
+                visible = autoScanInfo != null,
+                icon = { Icon(Icons.Default.AutoAwesome, null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(16.dp)) },
+                text = autoScanInfo ?: "",
+                textColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                containerColor = MaterialTheme.colorScheme.tertiaryContainer
+            )
+
             // ── 有图片时显示操作区 ────────────────────
             if (selectedBitmap != null) {
                 ActionBar(
                     isProcessing = isProcessing,
                     correctionAvailable = correctedBitmap != null && processedBitmap == null && detectionStatus?.contains("降级") == false,
+                    onAutoScan = {
+                        scope.launch {
+                            runAutoScan(
+                                context, selectedBitmap!!,
+                                onStart = { isProcessing = true; autoScanInfo = null; errorMessage = null },
+                                onSuccess = { result, info ->
+                                    correctedBitmap = result
+                                    processedBitmap = result
+                                    autoScanInfo = info
+                                    detectionStatus = null
+                                },
+                                onError = { errorMessage = it },
+                                onFinish = { isProcessing = false }
+                            )
+                        }
+                    },
                     onCorrect = {
                         scope.launch {
                             runDocumentCorrection(
@@ -311,12 +339,13 @@ private fun StatusCard(
 }
 
 /**
- * 操作按钮：文档矫正 / 预览效果 / 保存
+ * 操作按钮：一键扫描 / 文档矫正 / 预览效果 / 保存
  */
 @Composable
 private fun ActionBar(
     isProcessing: Boolean,
     correctionAvailable: Boolean,
+    onAutoScan: () -> Unit,
     onCorrect: () -> Unit,
     onPreview: () -> Unit,
     onSave: () -> Unit
@@ -326,6 +355,29 @@ private fun ActionBar(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
+        Button(
+            onClick = onAutoScan,
+            enabled = !isProcessing,
+            modifier = Modifier.weight(1.2f),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.tertiary
+            )
+        ) {
+            if (isProcessing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onTertiary
+                )
+                Spacer(Modifier.width(4.dp))
+            } else {
+                Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+            }
+            Text("一键扫描", fontSize = 13.sp)
+        }
+
         Button(
             onClick = onCorrect,
             enabled = !isProcessing,
@@ -769,6 +821,50 @@ private suspend fun runDocumentCorrection(
         }
     } catch (e: Exception) {
         onError("文档矫正失败: ${e.message}")
+    } finally {
+        onFinish()
+    }
+}
+
+/**
+ * 一键扫描：全自动文档扫描流水线
+ */
+private suspend fun runAutoScan(
+    context: Context,
+    bitmap: Bitmap,
+    onStart: () -> Unit,
+    onSuccess: (Bitmap, String) -> Unit,
+    onError: (String) -> Unit,
+    onFinish: () -> Unit
+) {
+    onStart()
+    try {
+        val result = withContext(Dispatchers.Default) {
+            val scanner = DocumentScanner()
+            val scanResult = scanner.autoScan(bitmap)
+            val docTypeName = when (scanResult.documentType) {
+                DocumentType.A4 -> "📄 A4/文档"
+                DocumentType.RECEIPT -> "🧾 小票/收据"
+                DocumentType.BOOK_PAGE -> "📖 书页/双栏"
+                DocumentType.PHOTO -> "🖼️ 照片"
+                DocumentType.UNKNOWN -> "❓ 未知"
+            }
+            val cornerInfo = if (scanResult.corners != null) "✅ 四角检测成功" else "⚠️ 未检测到四角"
+            val enhanceInfo = if (scanResult.autoEnhanced) "已增强" else "保持原色"
+            val info = "$docTypeName · $cornerInfo · $enhanceInfo · 耗时 ${scanResult.processingTimeMs}ms"
+            scanResult.bitmap to info
+        }
+
+        // 最后用 autoCrop 做精细裁边
+        val finalBitmap = try {
+            ImageProcessor(context).autoCrop(result.first)
+        } catch (e: Exception) {
+            result.first
+        }
+
+        onSuccess(finalBitmap, result.second)
+    } catch (e: Exception) {
+        onError("一键扫描失败: ${e.message}")
     } finally {
         onFinish()
     }
