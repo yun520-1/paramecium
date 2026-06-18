@@ -66,8 +66,8 @@ class DocumentScanner {
     companion object {
         private const val CANNY_LOW = 30.0     // Canny 低阈值
         private const val CANNY_HIGH = 100.0   // Canny 高阈值
-        private const val MIN_AREA_RATIO = 0.06f   // v3.3: 0.08→0.06 放宽最小面积门槛，允许检测更多中小尺寸文档
-        private const val MIN_SIDE_RATIO = 0.12f   // v3.2 新增：外接框短边至少占原图 12%
+        private const val MIN_AREA_RATIO = 0.12f   // v3.4: 0.06→0.12 提高最小面积门槛，防止误检内部小块区域
+        private const val MIN_SIDE_RATIO = 0.20f   // v3.4: 0.12→0.20 提高外接框短边要求，防止检测到极小区域
         private const val DP_EPSILON_RATIO = 0.015f  // Douglas-Peucker epsilon 相对值（v3.1 从 0.018→0.015 更精确拟合）
         private const val MORPH_KERNEL = 7            // v3.2: 5→7 更大的形态学核，更好地连接边缘
 
@@ -172,6 +172,10 @@ class DocumentScanner {
      * 3. 自动摆正文本行
      * 4. 根据文档类型应用自适应增强
      *
+     * 安全机制：
+     * - 检测到的四边形外接框必须覆盖原图至少 40% 宽和高
+     * - 否则跳过透视变换，走基本增强降级（防止小区域→3D拉伸）
+     *
      * @param bitmap 输入图像
      * @return ScanResult 包含处理结果、文档类型、处理耗时等信息
      */
@@ -192,13 +196,26 @@ class DocumentScanner {
             Log.w("DocumentScanner", "autoScan 四角检测失败", e)
         }
 
-        if (corners != null && corners.isNotEmpty()) {
-            // 3a. 四角有效 → 透视校正 + 纠偏 + 增强
+        // 3. 角落有效性校验：必须覆盖原图至少 40%，否则是误检
+        var cornersValid = false
+        if (corners != null && corners.size == 4) {
+            val sorted = sortCorners(corners[0], corners[1], corners[2], corners[3])
+            val minX = sorted.minOf { it.x }; val maxX = sorted.maxOf { it.x }
+            val minY = sorted.minOf { it.y }; val maxY = sorted.maxOf { it.y }
+            val quadW = maxX - minX; val quadH = maxY - minY
+            cornersValid = quadW >= bitmap.width * 0.40f && quadH >= bitmap.height * 0.40f
+            if (!cornersValid) {
+                Log.w("DocumentScanner", "角落太小 ($quadW×$quadH vs ${bitmap.width}×${bitmap.height})，跳过透视变换")
+            }
+        }
+
+        if (corners != null && corners.isNotEmpty() && cornersValid) {
+            // 4a. 四角有效且足够大 → 透视校正 + 纠偏 + 增强
             try {
                 result = perspectiveTransform(bitmap, corners)
                 result = deskew(result)
 
-                // 3b. 根据文档类型应用自适应增强
+                // 4b. 根据文档类型应用自适应增强
                 when (docType) {
                     DocumentType.A4, DocumentType.BOOK_PAGE -> {
                         // 文档类：灰度 + 增强对比，文字更清晰
@@ -224,7 +241,7 @@ class DocumentScanner {
                 result = bitmap
             }
         } else {
-            // 4. 四角检测失败 → 降级为基本增强
+            // 5. 四角检测失败或无效 → 降级为基本增强
             enhanced = true
             try {
                 result = when (docType) {
@@ -241,7 +258,7 @@ class DocumentScanner {
         return ScanResult(
             bitmap = result,
             documentType = docType,
-            corners = if (corners.isNullOrEmpty()) null else corners,
+            corners = if (corners.isNullOrEmpty() || !cornersValid) null else corners,
             autoEnhanced = enhanced,
             processingTimeMs = elapsed
         )
@@ -804,12 +821,12 @@ class DocumentScanner {
     }
 
     private fun useFallbackCorners(width: Int, height: Int): List<PointF> {
-        val margin = minOf(width, height) / 8  // v3.2: /20→/8 增大默认边距，防止裁剪过小
+        // v3.4: 返回完整图像角落（0 边距），避免降级时裁切过小
         return listOf(
-            PointF(margin.toFloat(), margin.toFloat()),
-            PointF((width - margin).toFloat(), margin.toFloat()),
-            PointF((width - margin).toFloat(), (height - margin).toFloat()),
-            PointF(margin.toFloat(), (height - margin).toFloat())
+            PointF(0f, 0f),
+            PointF(width.toFloat(), 0f),
+            PointF(width.toFloat(), height.toFloat()),
+            PointF(0f, height.toFloat())
         )
     }
 

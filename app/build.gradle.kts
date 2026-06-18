@@ -12,8 +12,8 @@ android {
         applicationId = "com.heartflow.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 60
-        versionName = "2.6.2"
+        versionCode = 61
+        versionName = "2.6.3"
         buildConfigField("String", "BAIDU_API_KEY", "\"${project.findProperty("BAIDU_API_KEY") ?: ""}\"")
         // 只保留 arm64-v8a，减少 APK 体积
         ndk { abiFilters += "arm64-v8a" }
